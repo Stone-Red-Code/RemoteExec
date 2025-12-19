@@ -4,7 +4,6 @@ using RemoteExec.Shared;
 
 using System.Collections.Concurrent;
 using System.Reflection;
-using System.Runtime.Loader;
 using System.Text.Json;
 using System.Threading.Channels;
 
@@ -20,39 +19,11 @@ public class RemoteExecutionHub(ILogger<RemoteExecutionHub> logger) : Hub
     {
         RemoteJobAssemblyLoadContext assemblyLoadContext = new RemoteJobAssemblyLoadContext($"RemoteJob_{Guid.NewGuid()}");
 
-        assemblyLoadContext.Resolving += AssemblyLoadContext_Resolving;
-
         _ = connections.TryAdd(Context.ConnectionId, assemblyLoadContext);
 
+        logger.LogInformation("Connection {ConnectionId} established", Context.ConnectionId);
+
         return base.OnConnectedAsync();
-    }
-
-    private Assembly? AssemblyLoadContext_Resolving(AssemblyLoadContext assemblyLoadContext, AssemblyName assemblyName)
-    {
-        logger.LogWarning("Assembly resolution triggered synchronously for {AssemblyName}. This should have been pre-loaded.", assemblyName.FullName);
-
-        // Return null to let other resolution mechanisms try
-        return null;
-    }
-
-    public async Task ProvideAssembly(Guid requestId, ChannelReader<byte> stream)
-    {
-        using MemoryStream ms = new MemoryStream();
-
-        while (await stream.WaitToReadAsync())
-        {
-            while (stream.TryRead(out byte item))
-            {
-                ms.WriteByte(item);
-            }
-        }
-
-        byte[] assemblyBytes = ms.ToArray();
-
-        if (pendingAssemblyRequests.TryRemove(requestId, out TaskCompletionSource<byte[]>? tcs))
-        {
-            tcs.SetResult(assemblyBytes);
-        }
     }
 
     public override Task OnDisconnectedAsync(Exception? exception)
@@ -60,6 +31,7 @@ public class RemoteExecutionHub(ILogger<RemoteExecutionHub> logger) : Hub
         if (connections.TryRemove(Context.ConnectionId, out RemoteJobAssemblyLoadContext? assemblyLoadContext))
         {
             assemblyLoadContext.Unload();
+            logger.LogInformation("Connection {ConnectionId} disconnected", Context.ConnectionId);
         }
 
         return base.OnDisconnectedAsync(exception);
@@ -71,6 +43,7 @@ public class RemoteExecutionHub(ILogger<RemoteExecutionHub> logger) : Hub
         {
             if (!connections.TryGetValue(Context.ConnectionId, out RemoteJobAssemblyLoadContext? assemblyLoadContext))
             {
+                logger.LogError("Connection {ConnectionId} not found", Context.ConnectionId);
                 throw new InvalidOperationException("Connection not found");
             }
 
@@ -104,6 +77,7 @@ public class RemoteExecutionHub(ILogger<RemoteExecutionHub> logger) : Hub
 
             if (parameters.Length != req.Arguments.Length)
             {
+                logger.LogError("Argument count mismatch for method {Method} in type {Type} for connection {ConnectionId}", req.MethodName, req.TypeName, Context.ConnectionId);
                 throw new ArgumentException("Argument count mismatch");
             }
 
@@ -143,10 +117,32 @@ public class RemoteExecutionHub(ILogger<RemoteExecutionHub> logger) : Hub
         }
         catch (Exception ex)
         {
+            logger.LogError(ex, "Error executing remote method {Method} in type {Type} for connection {ConnectionId}", req.MethodName, req.TypeName, Context.ConnectionId);
+
             return new RemoteExecutionResult
             {
                 Exception = ex.ToString()
             };
+        }
+    }
+
+    public async Task ProvideAssembly(Guid requestId, ChannelReader<byte> stream)
+    {
+        using MemoryStream ms = new MemoryStream();
+
+        while (await stream.WaitToReadAsync())
+        {
+            while (stream.TryRead(out byte item))
+            {
+                ms.WriteByte(item);
+            }
+        }
+
+        byte[] assemblyBytes = ms.ToArray();
+
+        if (pendingAssemblyRequests.TryRemove(requestId, out TaskCompletionSource<byte[]>? tcs))
+        {
+            tcs.SetResult(assemblyBytes);
         }
     }
 
@@ -159,16 +155,10 @@ public class RemoteExecutionHub(ILogger<RemoteExecutionHub> logger) : Hub
 
             _ = pendingAssemblyRequests.TryAdd(guid, tcs);
 
-            logger.LogInformation("Requesting assembly {Assembly} with request ID {RequestId}", assemblyName, guid);
-
             await Clients.Caller.SendAsync("RequestAssembly", assemblyName, guid);
-
-            logger.LogInformation("Waiting for assembly {Assembly} with request ID {RequestId}", assemblyName, guid);
 
             // Wait for the assembly with a timeout
             byte[] assemblyBytes = await tcs.Task.WaitAsync(TimeSpan.FromSeconds(30));
-
-            logger.LogInformation("Received assembly {Assembly} with request ID {RequestId}", assemblyName, guid);
 
             // Return a temporary assembly just for metadata inspection
             using MemoryStream ms = new MemoryStream(assemblyBytes);
@@ -190,13 +180,9 @@ public class RemoteExecutionHub(ILogger<RemoteExecutionHub> logger) : Hub
 
         _ = pendingAssemblyRequests.TryAdd(guid, tcs);
 
-        logger.LogInformation("Requesting assembly bytes for {Assembly} with request ID {RequestId}", assemblyName, guid);
-
         await Clients.Caller.SendAsync("RequestAssembly", assemblyName, guid);
 
         byte[] assemblyBytes = await tcs.Task.WaitAsync(TimeSpan.FromSeconds(30));
-
-        logger.LogInformation("Received assembly bytes for {Assembly} with request ID {RequestId}", assemblyName, guid);
 
         return assemblyBytes;
     }
@@ -225,9 +211,6 @@ public class RemoteExecutionHub(ILogger<RemoteExecutionHub> logger) : Hub
                 }
                 catch
                 {
-                    // If not in default context, request from client
-                    logger.LogInformation("Pre-loading referenced assembly {Assembly}", referencedAssembly.FullName);
-
                     Assembly tempAssembly = await RequestAssemblyAsync(referencedAssembly.FullName!);
                     byte[] assemblyBytes = await GetAssemblyBytesAsync(tempAssembly);
 

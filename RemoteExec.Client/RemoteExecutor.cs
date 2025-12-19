@@ -45,6 +45,11 @@ public class RemoteExecutor(string url)
         await _connection.StartAsync(cancellationToken);
     }
 
+    public async Task StopAsync(CancellationToken cancellationToken = default)
+    {
+        await _connection.StopAsync(cancellationToken);
+    }
+
     public bool TryExecute<TDelegate, TResult>(TDelegate del, out TResult? result, params object[] args) where TDelegate : Delegate
     {
         try
