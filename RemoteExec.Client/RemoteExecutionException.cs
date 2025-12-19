@@ -1,5 +1,5 @@
-﻿
-[Serializable]
-internal class RemoteExecutionException(string message) : Exception(message)
+﻿namespace RemoteExec.Client;
+
+public class RemoteExecutionException(string message) : Exception(message)
 {
 }

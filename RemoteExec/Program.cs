@@ -1,4 +1,6 @@
-﻿using RemoteExec.Client;
+﻿using CuteUtils.FluentMath.TypeExtensions;
+
+using RemoteExec.Client;
 
 RemoteExecutor remoteExecutor = new RemoteExecutor("https://localhost:7109/remote");
 await remoteExecutor.StartAsync();
@@ -13,5 +15,5 @@ Console.WriteLine($"Result: {result}");
 
 static int Multiply(int x, int y)
 {
-    return x * y;
+    return x.Multiply(y);
 }

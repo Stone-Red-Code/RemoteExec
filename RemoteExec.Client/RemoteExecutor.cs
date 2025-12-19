@@ -5,6 +5,7 @@ using RemoteExec.Shared;
 using System.Diagnostics.CodeAnalysis;
 using System.Reflection;
 using System.Text.Json;
+using System.Threading.Channels;
 
 namespace RemoteExec.Client;
 
@@ -18,6 +19,29 @@ public class RemoteExecutor(string url)
 
     public async Task StartAsync(CancellationToken cancellationToken = default)
     {
+        _ = _connection.On($"RequestAssembly", async (string assemblyName, Guid requestId) =>
+        {
+            Assembly? assembly = AppDomain.CurrentDomain.GetAssemblies().FirstOrDefault(a => a.GetName().FullName == assemblyName);
+
+            if (assembly == null)
+            {
+                assembly = Assembly.Load(new AssemblyName(assemblyName));
+            }
+
+            byte[] dllBytes = await File.ReadAllBytesAsync(assembly.Location!);
+
+            Channel<byte> channel = Channel.CreateUnbounded<byte>();
+
+            foreach (byte b in dllBytes)
+            {
+                await channel.Writer.WriteAsync(b);
+            }
+
+            channel.Writer.Complete();
+
+            await _connection.InvokeAsync("ProvideAssembly", requestId, channel.Reader);
+        });
+
         await _connection.StartAsync(cancellationToken);
     }
 
@@ -73,28 +97,16 @@ public class RemoteExecutor(string url)
     {
         MethodInfo method = del.Method;
         Type declaringType = method.DeclaringType!;
-        Assembly asm = declaringType.Assembly;
+        Assembly assembly = declaringType.Assembly;
 
         if (!method.IsStatic)
         {
             throw new InvalidOperationException("Only static methods supported");
         }
 
-        if (asm.IsDynamic)
-        {
-            throw new InvalidOperationException("Dynamic assemblies are not supported");
-        }
-
-        if (string.IsNullOrEmpty(asm.Location))
-        {
-            throw new InvalidOperationException("Assembly location is not available");
-        }
-
-        byte[] dllBytes = File.ReadAllBytes(asm.Location);
-
         RemoteExecutionRequest request = new RemoteExecutionRequest
         {
-            AssemblyBytes = dllBytes,
+            AssemblyName = assembly.GetName().FullName,
             TypeName = declaringType.FullName!,
             MethodName = method.Name,
             ArgumentTypes = [.. method.GetParameters().Select(p => p.ParameterType.AssemblyQualifiedName!)],
