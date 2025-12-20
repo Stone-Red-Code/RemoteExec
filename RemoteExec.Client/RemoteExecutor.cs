@@ -2,6 +2,7 @@
 
 using RemoteExec.Shared;
 
+using System.Collections.Concurrent;
 using System.Diagnostics.CodeAnalysis;
 using System.Reflection;
 using System.Text.Json;
@@ -9,45 +10,101 @@ using System.Threading.Channels;
 
 namespace RemoteExec.Client;
 
-public class RemoteExecutor(string url)
+public class RemoteExecutor
 {
-    private readonly HubConnection _connection =
-        new HubConnectionBuilder()
-            .WithUrl(url)
-            .WithAutomaticReconnect()
-            .Build();
+    private readonly List<HubConnection> connections = [];
+    private readonly ConcurrentDictionary<HubConnection, ServerMetrics> serverMetrics = new();
+    private int _currentConnectionIndex = 0;
+    private readonly Lock @lock = new Lock();
+    private readonly LoadBalancingStrategy loadBalancingStrategy;
+
+    public event EventHandler<ServerMetricsUpdatedEventArgs>? MetricsUpdated;
+
+    public RemoteExecutor(string url) : this([url], LoadBalancingStrategy.RoundRobin)
+    {
+    }
+
+    public RemoteExecutor(string[] urls, LoadBalancingStrategy loadBalancingStrategy = LoadBalancingStrategy.RoundRobin)
+    {
+        this.loadBalancingStrategy = loadBalancingStrategy;
+
+        foreach (string url in urls)
+        {
+            HubConnection connection = new HubConnectionBuilder()
+                .WithUrl(url)
+                .WithAutomaticReconnect()
+                .Build();
+
+            connections.Add(connection);
+        }
+    }
 
     public async Task StartAsync(CancellationToken cancellationToken = default)
     {
-        _ = _connection.On($"RequestAssembly", async (string assemblyName, Guid requestId) =>
+        List<Task> startTasks = [];
+
+        foreach (HubConnection connection in connections)
         {
-            Assembly? assembly = AppDomain.CurrentDomain.GetAssemblies().FirstOrDefault(a => a.GetName().FullName == assemblyName);
-
-            if (assembly == null)
+            _ = connection.On<ServerMetrics>("MetricsUpdated", metrics =>
             {
-                assembly = Assembly.Load(new AssemblyName(assemblyName));
-            }
+                serverMetrics[connection] = metrics;
+                MetricsUpdated?.Invoke(this, new ServerMetricsUpdatedEventArgs(connection, metrics));
+            });
 
-            byte[] dllBytes = await File.ReadAllBytesAsync(assembly.Location!);
-
-            Channel<byte> channel = Channel.CreateUnbounded<byte>();
-
-            foreach (byte b in dllBytes)
+            _ = connection.On($"RequestAssembly", async (string assemblyName, Guid requestId) =>
             {
-                await channel.Writer.WriteAsync(b);
-            }
+                Assembly? assembly = AppDomain.CurrentDomain.GetAssemblies().FirstOrDefault(a => a.GetName().FullName == assemblyName) ?? Assembly.Load(new AssemblyName(assemblyName));
+                byte[] dllBytes = await File.ReadAllBytesAsync(assembly.Location!);
 
-            channel.Writer.Complete();
+                Channel<byte> channel = Channel.CreateUnbounded<byte>();
 
-            await _connection.InvokeAsync("ProvideAssembly", requestId, channel.Reader);
-        });
+                foreach (byte b in dllBytes)
+                {
+                    await channel.Writer.WriteAsync(b);
+                }
 
-        await _connection.StartAsync(cancellationToken);
+                channel.Writer.Complete();
+
+                await connection.InvokeAsync("ProvideAssembly", requestId, channel.Reader);
+            });
+
+            startTasks.Add(connection.StartAsync(cancellationToken)
+                .ContinueWith(async (task, state) =>
+                {
+                    HubConnection conn = (HubConnection)state!;
+                    serverMetrics[conn] = await conn.InvokeAsync<ServerMetrics>("GetMetrics", cancellationToken);
+                    MetricsUpdated?.Invoke(this, new ServerMetricsUpdatedEventArgs(conn, serverMetrics[conn]));
+                }, connection, TaskScheduler.Default).Unwrap());
+        }
+
+        await Task.WhenAll(startTasks);
     }
 
     public async Task StopAsync(CancellationToken cancellationToken = default)
     {
-        await _connection.StopAsync(cancellationToken);
+        List<Task> stopTasks = [];
+
+        foreach (HubConnection connection in connections)
+        {
+            stopTasks.Add(connection.StopAsync(cancellationToken));
+        }
+
+        await Task.WhenAll(stopTasks);
+    }
+
+    public Dictionary<string, ServerMetrics> GetCurrentServerMetrics()
+    {
+        Dictionary<string, ServerMetrics> metrics = [];
+
+        foreach (HubConnection connection in connections)
+        {
+            if (serverMetrics.TryGetValue(connection, out ServerMetrics? newServerMetrics))
+            {
+                metrics[newServerMetrics.ServerId] = newServerMetrics;
+            }
+        }
+
+        return metrics;
     }
 
     public bool TryExecute<TDelegate, TResult>(TDelegate del, out TResult? result, params object[] args) where TDelegate : Delegate
@@ -118,7 +175,9 @@ public class RemoteExecutor(string url)
             Arguments = args
         };
 
-        RemoteExecutionResult result = _connection
+        HubConnection connection = GetNextConnection();
+
+        RemoteExecutionResult result = connection
             .InvokeAsync<RemoteExecutionResult>("Execute", request)
             .GetAwaiter()
             .GetResult();
@@ -129,5 +188,64 @@ public class RemoteExecutor(string url)
         }
 
         return result.Result;
+    }
+
+    private HubConnection GetNextConnection()
+    {
+        if (connections.Count == 0)
+        {
+            throw new InvalidOperationException("No connections available");
+        }
+
+        return loadBalancingStrategy switch
+        {
+            LoadBalancingStrategy.RoundRobin => GetRoundRobinConnection(),
+            LoadBalancingStrategy.Random => GetRandomConnection(),
+            LoadBalancingStrategy.LeastConnections => GetLeastConnections(),
+            LoadBalancingStrategy.LeastActiveTasks => GetLeastActiveTasksConnections(),
+            LoadBalancingStrategy.ResourceAware => GetResourceAwareConnections(),
+            _ => throw new NotSupportedException($"Load balancing strategy {loadBalancingStrategy} is not supported")
+        };
+    }
+
+    private HubConnection GetRoundRobinConnection()
+    {
+        lock (@lock)
+        {
+            HubConnection connection = connections[_currentConnectionIndex];
+            _currentConnectionIndex = (_currentConnectionIndex + 1) % connections.Count;
+            return connection;
+        }
+    }
+
+    private HubConnection GetRandomConnection()
+    {
+        int index = Random.Shared.Next(connections.Count);
+        return connections[index];
+    }
+
+    private HubConnection GetLeastConnections()
+    {
+        // Purely looks at how many clients are connected to the Hub
+        return connections.OrderBy(c => serverMetrics.TryGetValue(c, out ServerMetrics? m) ? m.ActiveConnections : 0).First();
+    }
+
+    private HubConnection GetLeastActiveTasksConnections()
+    {
+        return connections.OrderBy(c => serverMetrics.TryGetValue(c, out ServerMetrics? m) ? m.ActiveTasks : 0).First();
+    }
+
+    private HubConnection GetResourceAwareConnections()
+    {
+        return connections.OrderBy(c =>
+        {
+            if (!serverMetrics.TryGetValue(c, out ServerMetrics? m))
+            {
+                return 0;
+            }
+
+            // Simple heuristic: CPU percentage + (Memory in MB / 1024)
+            return m.CpuUsage + (m.TotalMemoryUsage / 1024 / 1024 / 100);
+        }).First();
     }
 }

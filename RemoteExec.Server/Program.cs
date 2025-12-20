@@ -1,4 +1,5 @@
 using RemoteExec.Server.Hubs;
+using RemoteExec.Server.Services;
 
 WebApplicationBuilder builder = WebApplication.CreateBuilder(args);
 
@@ -7,6 +8,10 @@ WebApplicationBuilder builder = WebApplication.CreateBuilder(args);
 builder.Services.AddControllers();
 builder.Services.AddSignalR();
 builder.Services.AddOpenApi();
+builder.Services.AddHealthChecks();
+
+// Add metrics broadcast background service
+builder.Services.AddHostedService<MetricsBroadcastService>();
 
 WebApplication app = builder.Build();
 
@@ -18,10 +23,12 @@ if (app.Environment.IsDevelopment())
     _ = app.MapOpenApi();
 }
 
-app.UseHttpsRedirection();
+//app.UseHttpsRedirection();
 
 app.UseAuthorization();
 
 app.MapControllers();
+
+app.MapHealthChecks("/health");
 
 await app.RunAsync();

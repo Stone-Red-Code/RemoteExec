@@ -3,6 +3,7 @@
 using RemoteExec.Shared;
 
 using System.Collections.Concurrent;
+using System.Diagnostics;
 using System.Reflection;
 using System.Text.Json;
 using System.Threading.Channels;
@@ -14,6 +15,11 @@ public class RemoteExecutionHub(ILogger<RemoteExecutionHub> logger) : Hub
     private static readonly ConcurrentDictionary<string, RemoteJobAssemblyLoadContext> connections = new();
 
     private static readonly ConcurrentDictionary<Guid, TaskCompletionSource<byte[]>> pendingAssemblyRequests = new();
+
+    private static DateTime lastMetricsTimestamp;
+    private static TimeSpan lastTotalProcessorTime;
+
+    private static int activeTasks = 0;
 
     public override Task OnConnectedAsync()
     {
@@ -39,6 +45,8 @@ public class RemoteExecutionHub(ILogger<RemoteExecutionHub> logger) : Hub
 
     public async Task<RemoteExecutionResult> Execute(RemoteExecutionRequest req)
     {
+        _ = Interlocked.Increment(ref activeTasks);
+
         try
         {
             if (!connections.TryGetValue(Context.ConnectionId, out RemoteJobAssemblyLoadContext? assemblyLoadContext))
@@ -110,6 +118,23 @@ public class RemoteExecutionHub(ILogger<RemoteExecutionHub> logger) : Hub
 
             object? result = method.Invoke(null, invokeArgs);
 
+            if (result is Task taskResult)
+            {
+                await taskResult.ConfigureAwait(false);
+                Type returnType = method.ReturnType;
+                if (returnType.IsGenericType && returnType.GetGenericTypeDefinition() == typeof(Task<>))
+                {
+                    // For Task<T>, get the Result property
+                    PropertyInfo resultProperty = returnType.GetProperty("Result")!;
+                    result = resultProperty.GetValue(taskResult);
+                }
+                else
+                {
+                    // For non-generic Task, result is null
+                    result = null;
+                }
+            }
+
             return new RemoteExecutionResult
             {
                 Result = result
@@ -123,6 +148,10 @@ public class RemoteExecutionHub(ILogger<RemoteExecutionHub> logger) : Hub
             {
                 Exception = ex.ToString()
             };
+        }
+        finally
+        {
+            _ = Interlocked.Decrement(ref activeTasks);
         }
     }
 
@@ -144,6 +173,48 @@ public class RemoteExecutionHub(ILogger<RemoteExecutionHub> logger) : Hub
         {
             tcs.SetResult(assemblyBytes);
         }
+    }
+
+    public async Task<ServerMetrics> GetMetrics()
+    {
+        return await GetServerMetrics();
+    }
+
+    public static async Task BroadcastMetricsAsync(IHubContext<RemoteExecutionHub> hubContext)
+    {
+        ServerMetrics metrics = await GetServerMetrics();
+        await hubContext.Clients.All.SendAsync("MetricsUpdated", metrics);
+    }
+
+    private static async Task<ServerMetrics> GetServerMetrics()
+    {
+        Process currentProcess = Process.GetCurrentProcess();
+
+        // Capture current values
+        DateTime currentTime = DateTime.UtcNow;
+        TimeSpan currentProcessorTime = currentProcess.TotalProcessorTime;
+
+        // Calculate the difference since the last check
+        double elapsedMs = (currentTime - lastMetricsTimestamp).TotalMilliseconds;
+        double cpuMsUsed = (currentProcessorTime - lastTotalProcessorTime).TotalMilliseconds;
+
+        // Calculate percentage: (Time Used / Time Elapsed) / Cores
+        // We multiply by 100 to get a 0-100 scale
+        double cpuUsagePercent = cpuMsUsed / elapsedMs / Environment.ProcessorCount * 100;
+
+        // Update static variables for the next call
+        lastMetricsTimestamp = currentTime;
+        lastTotalProcessorTime = currentProcessorTime;
+
+        return new ServerMetrics
+        {
+            ServerId = Environment.MachineName,
+            ActiveConnections = connections.Count,
+            ActiveTasks = activeTasks,
+            TotalMemoryUsage = currentProcess.WorkingSet64,
+            CpuUsage = Math.Clamp(Math.Round(cpuUsagePercent, 2), 0, 100),
+            Timestamp = currentTime
+        };
     }
 
     private async Task<Assembly> RequestAssemblyAsync(string assemblyName)
