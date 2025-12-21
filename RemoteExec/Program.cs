@@ -17,16 +17,16 @@ singleHostExecutor.MetricsUpdated += (sender, e) =>
 
 await singleHostExecutor.StartAsync();
 
-bool success = singleHostExecutor.TryExecute(Multiply, out int result, 2, 4);
-Console.WriteLine($"Success: {success}, Result: {result}");
-
-result = singleHostExecutor.Execute<Func<int, int, Task<int>>, int>(Multiply, 3, 5);
-Console.WriteLine($"Result: {result}");
+await Parallel.ForAsync(0, 1000, async (i, cancellationToken) =>
+{
+    int r = await singleHostExecutor.Execute<Func<int, int, Task<int>>, int>(Multiply, i, i + 1);
+    Console.WriteLine($"Multiply {i} * {i + 1} = {r}");
+});
 
 await singleHostExecutor.StopAsync();
 
 static async Task<int> Multiply(int x, int y)
 {
-    await Task.Delay(5000);
+    await Task.Delay(Random.Shared.Next(100, 500));
     return x.Multiply(y);
 }

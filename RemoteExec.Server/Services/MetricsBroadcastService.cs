@@ -6,7 +6,7 @@ namespace RemoteExec.Server.Services;
 
 public class MetricsBroadcastService(IHubContext<RemoteExecutionHub> hubContext, ILogger<MetricsBroadcastService> logger) : BackgroundService
 {
-    private readonly TimeSpan _broadcastInterval = TimeSpan.FromSeconds(2);
+    private readonly TimeSpan _broadcastInterval = TimeSpan.FromMilliseconds(500);
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {

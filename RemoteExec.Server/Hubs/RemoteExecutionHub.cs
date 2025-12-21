@@ -6,7 +6,6 @@ using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Reflection;
 using System.Text.Json;
-using System.Threading.Channels;
 
 namespace RemoteExec.Server.Hubs;
 
@@ -16,10 +15,13 @@ public class RemoteExecutionHub(ILogger<RemoteExecutionHub> logger) : Hub
 
     private static readonly ConcurrentDictionary<Guid, TaskCompletionSource<byte[]>> pendingAssemblyRequests = new();
 
+    private static ServerMetrics? lastMetrics;
     private static DateTime lastMetricsTimestamp;
     private static TimeSpan lastTotalProcessorTime;
 
     private static int activeTasks = 0;
+    private static readonly int maxConcurrentTasks = Environment.ProcessorCount * 2;
+    private static readonly SemaphoreSlim taskSemaphore = new SemaphoreSlim(maxConcurrentTasks, maxConcurrentTasks);
 
     public override Task OnConnectedAsync()
     {
@@ -43,9 +45,61 @@ public class RemoteExecutionHub(ILogger<RemoteExecutionHub> logger) : Hub
         return base.OnDisconnectedAsync(exception);
     }
 
+    public async Task StartTaskStream(IAsyncEnumerable<TaskItem> taskStream)
+    {
+        logger.LogInformation("Starting task stream for connection {ConnectionId}", Context.ConnectionId);
+
+        try
+        {
+            await foreach (TaskItem taskItem in taskStream.WithCancellation(Context.ConnectionAborted))
+            {
+                // Wait for available slot before processing
+                await taskSemaphore.WaitAsync(Context.ConnectionAborted);
+
+                // Process task asynchronously without blocking the stream
+                _ = Task.Run(async () =>
+                {
+                    try
+                    {
+                        RemoteExecutionResult result = await ExecuteTask(taskItem.Request);
+                        await Clients.Caller.SendAsync("TaskResult", taskItem.TaskId, result);
+                    }
+                    catch (Exception ex)
+                    {
+                        logger.LogError(ex, "Error processing task {TaskId}", taskItem.TaskId);
+                        RemoteExecutionResult errorResult = new RemoteExecutionResult
+                        {
+                            Exception = ex.ToString()
+                        };
+                        await Clients.Caller.SendAsync("TaskResult", taskItem.TaskId, errorResult);
+                    }
+                    finally
+                    {
+                        _ = taskSemaphore.Release();
+                    }
+                }, Context.ConnectionAborted);
+            }
+        }
+        catch (OperationCanceledException ex)
+        {
+            logger.LogError(ex, "Task stream for connection {ConnectionId} was canceled", Context.ConnectionId);
+        }
+        catch (Exception ex)
+        {
+            logger.LogError(ex, "Error in task stream for connection {ConnectionId}", Context.ConnectionId);
+        }
+    }
+
     public async Task<RemoteExecutionResult> Execute(RemoteExecutionRequest req)
     {
+        return await ExecuteTask(req);
+    }
+
+    private async Task<RemoteExecutionResult> ExecuteTask(RemoteExecutionRequest req)
+    {
         _ = Interlocked.Increment(ref activeTasks);
+
+        logger.LogInformation(req.MethodName);
 
         try
         {
@@ -155,20 +209,8 @@ public class RemoteExecutionHub(ILogger<RemoteExecutionHub> logger) : Hub
         }
     }
 
-    public async Task ProvideAssembly(Guid requestId, ChannelReader<byte> stream)
+    public static async Task ProvideAssembly(Guid requestId, byte[] assemblyBytes)
     {
-        using MemoryStream ms = new MemoryStream();
-
-        while (await stream.WaitToReadAsync())
-        {
-            while (stream.TryRead(out byte item))
-            {
-                ms.WriteByte(item);
-            }
-        }
-
-        byte[] assemblyBytes = ms.ToArray();
-
         if (pendingAssemblyRequests.TryRemove(requestId, out TaskCompletionSource<byte[]>? tcs))
         {
             tcs.SetResult(assemblyBytes);
@@ -183,6 +225,24 @@ public class RemoteExecutionHub(ILogger<RemoteExecutionHub> logger) : Hub
     public static async Task BroadcastMetricsAsync(IHubContext<RemoteExecutionHub> hubContext)
     {
         ServerMetrics metrics = await GetServerMetrics();
+
+        // Only broadcast if metrics have changed by a significant amount
+        if (lastMetrics is not null)
+        {
+            double cpuDiff = Math.Abs(metrics.CpuUsage - lastMetrics.CpuUsage);
+            long memoryDiff = Math.Abs(metrics.TotalMemoryUsage - lastMetrics.TotalMemoryUsage);
+            int connectionsDiff = Math.Abs(metrics.ActiveConnections - lastMetrics.ActiveConnections);
+            int tasksDiff = Math.Abs(metrics.ActiveTasks - lastMetrics.ActiveTasks);
+            int maxTasksDiff = Math.Abs(metrics.MaxConcurrentTasks - lastMetrics.MaxConcurrentTasks);
+
+            if (cpuDiff < 1.0 && memoryDiff < 10 * 1024 * 1024 && connectionsDiff == 0 && tasksDiff == 0 && maxTasksDiff == 0)
+            {
+                return; // No significant change
+            }
+        }
+
+        lastMetrics = metrics;
+
         await hubContext.Clients.All.SendAsync("MetricsUpdated", metrics);
     }
 
@@ -211,6 +271,7 @@ public class RemoteExecutionHub(ILogger<RemoteExecutionHub> logger) : Hub
             ServerId = Environment.MachineName,
             ActiveConnections = connections.Count,
             ActiveTasks = activeTasks,
+            MaxConcurrentTasks = maxConcurrentTasks,
             TotalMemoryUsage = currentProcess.WorkingSet64,
             CpuUsage = Math.Clamp(Math.Round(cpuUsagePercent, 2), 0, 100),
             Timestamp = currentTime

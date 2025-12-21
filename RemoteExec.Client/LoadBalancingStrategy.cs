@@ -2,9 +2,6 @@
 
 public enum LoadBalancingStrategy
 {
-    RoundRobin,
-    Random,
-    LeastConnections,
-    LeastActiveTasks,
-    ResourceAware
+    ResourceAware,
+    LeastBacklog
 }
