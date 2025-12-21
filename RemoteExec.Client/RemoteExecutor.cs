@@ -1,5 +1,6 @@
 ﻿using Microsoft.AspNetCore.SignalR.Client;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 
 using RemoteExec.Shared;
 
@@ -19,18 +20,35 @@ public class RemoteExecutor : IDisposable
     private CancellationTokenSource distributorCts = new();
     private Task? distributorTask;
     private readonly LoadBalancingStrategy loadBalancingStrategy;
-
+    private readonly ILogger logger;
     private bool disposedValue;
 
     public event EventHandler<ServerMetricsUpdatedEventArgs>? MetricsUpdated;
 
-    public RemoteExecutor(string url) : this([url], LoadBalancingStrategy.ResourceAware)
+    public RemoteExecutor(string url) : this([url], LoadBalancingStrategy.ResourceAware, NullLogger.Instance)
     {
     }
 
-    public RemoteExecutor(string[] urls, LoadBalancingStrategy loadBalancingStrategy = LoadBalancingStrategy.ResourceAware)
+    public RemoteExecutor(string url, ILogger logger) : this([url], LoadBalancingStrategy.ResourceAware, logger)
+    {
+    }
+
+    public RemoteExecutor(string url, LoadBalancingStrategy loadBalancingStrategy) : this([url], loadBalancingStrategy, NullLogger.Instance)
+    {
+    }
+
+    public RemoteExecutor(string[] urls) : this(urls, LoadBalancingStrategy.ResourceAware, NullLogger.Instance)
+    {
+    }
+
+    public RemoteExecutor(string[] urls, LoadBalancingStrategy loadBalancingStrategy) : this(urls, loadBalancingStrategy, NullLogger.Instance)
+    {
+    }
+
+    public RemoteExecutor(string[] urls, LoadBalancingStrategy loadBalancingStrategy, ILogger logger)
     {
         this.loadBalancingStrategy = loadBalancingStrategy;
+        this.logger = logger;
 
         foreach (string url in urls)
         {
@@ -42,7 +60,7 @@ public class RemoteExecutor : IDisposable
                 .WithAutomaticReconnect()
                 .ConfigureLogging(logging =>
                 {
-                    _ = logging.AddProvider(new RemoteExecLoggerProvider());
+                    _ = logging.AddProvider(new RemoteExecLoggerProvider(logger));
                 })
                 .Build();
 
@@ -106,6 +124,8 @@ public class RemoteExecutor : IDisposable
 
     public async Task StopAsync(CancellationToken cancellationToken = default)
     {
+        logger.LogInformation("Stopping RemoteExecutor...");
+
         await distributorCts.CancelAsync();
 
         if (distributorTask != null)
@@ -113,13 +133,15 @@ public class RemoteExecutor : IDisposable
             try
             {
                 await distributorTask;
+                logger.LogDebug("Distributor task completed successfully");
             }
-            catch (OperationCanceledException)
+            catch (OperationCanceledException ex)
             {
-                // Expected
+                logger.LogError(ex, "Distributor task was canceled");
             }
         }
 
+        logger.LogDebug("Completing task channels for {ServerCount} servers", servers.Count);
         foreach (ServerConnection server in servers)
         {
             server.TaskChannel.Writer.Complete();
@@ -133,6 +155,7 @@ public class RemoteExecutor : IDisposable
         }
 
         await Task.WhenAll(stopTasks);
+        logger.LogInformation("RemoteExecutor stopped successfully");
     }
 
     public Dictionary<string, ServerMetrics> GetCurrentServerMetrics()
@@ -313,36 +336,5 @@ public class RemoteExecutor : IDisposable
         // Do not change this code. Put cleanup code in 'Dispose(bool disposing)' method
         Dispose(disposing: true);
         GC.SuppressFinalize(this);
-    }
-}
-
-internal class RemoteExecLoggerProvider : ILoggerProvider
-{
-    public ILogger CreateLogger(string categoryName)
-    {
-        return new RemoteExecLogger();
-    }
-
-    public void Dispose()
-    {
-        throw new NotImplementedException();
-    }
-}
-
-internal class RemoteExecLogger : ILogger
-{
-    public IDisposable? BeginScope<TState>(TState state) where TState : notnull
-    {
-        return null;
-    }
-
-    public bool IsEnabled(LogLevel logLevel)
-    {
-        return true;
-    }
-
-    public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception, Func<TState, Exception?, string> formatter)
-    {
-        Console.WriteLine($"[{logLevel}] {formatter(state, exception)}");
     }
 }

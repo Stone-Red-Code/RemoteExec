@@ -15,6 +15,9 @@ public class RemoteExecutionHub(ILogger<RemoteExecutionHub> logger) : Hub
 
     private static readonly ConcurrentDictionary<Guid, TaskCompletionSource<byte[]>> pendingAssemblyRequests = new();
 
+    // Track pending assembly requests per connection to avoid duplicate requests
+    private static readonly ConcurrentDictionary<string, ConcurrentDictionary<string, Task<byte[]>>> pendingAssemblyRequestsByConnection = new();
+
     private static ServerMetrics? lastMetrics;
     private static DateTime lastMetricsTimestamp;
     private static TimeSpan lastTotalProcessorTime;
@@ -28,6 +31,7 @@ public class RemoteExecutionHub(ILogger<RemoteExecutionHub> logger) : Hub
         RemoteJobAssemblyLoadContext assemblyLoadContext = new RemoteJobAssemblyLoadContext($"RemoteJob_{Guid.NewGuid()}");
 
         _ = connections.TryAdd(Context.ConnectionId, assemblyLoadContext);
+        _ = pendingAssemblyRequestsByConnection.TryAdd(Context.ConnectionId, new ConcurrentDictionary<string, Task<byte[]>>());
 
         logger.LogInformation("Connection {ConnectionId} established", Context.ConnectionId);
 
@@ -41,6 +45,8 @@ public class RemoteExecutionHub(ILogger<RemoteExecutionHub> logger) : Hub
             assemblyLoadContext.Unload();
             logger.LogInformation("Connection {ConnectionId} disconnected", Context.ConnectionId);
         }
+
+        _ = pendingAssemblyRequestsByConnection.TryRemove(Context.ConnectionId, out _);
 
         return base.OnDisconnectedAsync(exception);
     }
@@ -98,8 +104,6 @@ public class RemoteExecutionHub(ILogger<RemoteExecutionHub> logger) : Hub
     private async Task<RemoteExecutionResult> ExecuteTask(RemoteExecutionRequest req)
     {
         _ = Interlocked.Increment(ref activeTasks);
-
-        logger.LogInformation(req.MethodName);
 
         try
         {
@@ -282,17 +286,36 @@ public class RemoteExecutionHub(ILogger<RemoteExecutionHub> logger) : Hub
     {
         try
         {
-            Guid guid = Guid.NewGuid();
-            TaskCompletionSource<byte[]> tcs = new TaskCompletionSource<byte[]>();
+            if (!pendingAssemblyRequestsByConnection.TryGetValue(Context.ConnectionId, out ConcurrentDictionary<string, Task<byte[]>>? connectionPendingRequests))
+            {
+                throw new InvalidOperationException("Connection not found");
+            }
 
-            _ = pendingAssemblyRequests.TryAdd(guid, tcs);
+            Task<byte[]> assemblyBytesTask = connectionPendingRequests.GetOrAdd(assemblyName, key =>
+            {
+                return Task.Run(async () =>
+                {
+                    try
+                    {
+                        Guid guid = Guid.NewGuid();
+                        TaskCompletionSource<byte[]> tcs = new TaskCompletionSource<byte[]>();
 
-            await Clients.Caller.SendAsync("RequestAssembly", assemblyName, guid);
+                        _ = pendingAssemblyRequests.TryAdd(guid, tcs);
 
-            // Wait for the assembly with a timeout
-            byte[] assemblyBytes = await tcs.Task.WaitAsync(TimeSpan.FromSeconds(30));
+                        await Clients.Caller.SendAsync("RequestAssembly", key, guid);
 
-            // Return a temporary assembly just for metadata inspection
+                        // Wait for the assembly with a timeout
+                        return await tcs.Task.WaitAsync(TimeSpan.FromSeconds(30));
+                    }
+                    finally
+                    {
+                        _ = connectionPendingRequests.TryRemove(key, out _);
+                    }
+                });
+            });
+
+            byte[] assemblyBytes = await assemblyBytesTask;
+
             using MemoryStream ms = new MemoryStream(assemblyBytes);
             return Assembly.Load(assemblyBytes);
         }
@@ -307,16 +330,34 @@ public class RemoteExecutionHub(ILogger<RemoteExecutionHub> logger) : Hub
     {
         string assemblyName = assembly.GetName().FullName!;
 
-        Guid guid = Guid.NewGuid();
-        TaskCompletionSource<byte[]> tcs = new TaskCompletionSource<byte[]>();
+        if (!pendingAssemblyRequestsByConnection.TryGetValue(Context.ConnectionId, out ConcurrentDictionary<string, Task<byte[]>>? connectionPendingRequests))
+        {
+            throw new InvalidOperationException("Connection not found");
+        }
 
-        _ = pendingAssemblyRequests.TryAdd(guid, tcs);
+        Task<byte[]> assemblyBytesTask = connectionPendingRequests.GetOrAdd(assemblyName, key =>
+        {
+            return Task.Run(async () =>
+            {
+                try
+                {
+                    Guid guid = Guid.NewGuid();
+                    TaskCompletionSource<byte[]> tcs = new TaskCompletionSource<byte[]>();
 
-        await Clients.Caller.SendAsync("RequestAssembly", assemblyName, guid);
+                    _ = pendingAssemblyRequests.TryAdd(guid, tcs);
 
-        byte[] assemblyBytes = await tcs.Task.WaitAsync(TimeSpan.FromSeconds(30));
+                    await Clients.Caller.SendAsync("RequestAssembly", key, guid);
 
-        return assemblyBytes;
+                    return await tcs.Task.WaitAsync(TimeSpan.FromSeconds(30));
+                }
+                finally
+                {
+                    _ = connectionPendingRequests.TryRemove(key, out _);
+                }
+            });
+        });
+
+        return await assemblyBytesTask;
     }
 
     private async Task PreLoadReferencedAssembliesAsync(RemoteJobAssemblyLoadContext assemblyLoadContext, Assembly assembly)
