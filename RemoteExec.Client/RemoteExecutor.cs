@@ -12,15 +12,18 @@ using System.Threading.Channels;
 
 namespace RemoteExec.Client;
 
-public class RemoteExecutor : IDisposable
+public class RemoteExecutor : IAsyncDisposable
 {
     private readonly List<ServerConnection> servers = [];
     private readonly BlockingCollection<PendingTask> globalQueue = [];
     private readonly ConcurrentDictionary<Guid, TaskCompletionSource<RemoteExecutionResult>> pendingResults = new();
+
     private CancellationTokenSource distributorCts = new();
     private Task? distributorTask;
+
     private readonly LoadBalancingStrategy loadBalancingStrategy;
     private readonly ILogger logger;
+
     private bool disposedValue;
 
     public event EventHandler<ServerMetricsUpdatedEventArgs>? MetricsUpdated;
@@ -313,15 +316,19 @@ public class RemoteExecutor : IDisposable
         public required DateTime EnqueuedAt { get; init; }
     }
 
-    // S2930: Dispose distributorCts when no longer needed
-    protected virtual void Dispose(bool disposing)
+    protected virtual async Task DisposeAsync(bool disposing)
     {
         if (!disposedValue)
         {
             if (disposing)
             {
                 distributorCts.Dispose();
-                // Dispose managed state (managed objects) here if needed
+
+                foreach (ServerConnection server in servers)
+                {
+                    await server.Connection.DisposeAsync();
+                    server.HttpClient.Dispose();
+                }
             }
 
             // Free unmanaged resources (unmanaged objects) and override finalizer if needed
@@ -331,10 +338,9 @@ public class RemoteExecutor : IDisposable
         }
     }
 
-    public void Dispose()
+    public async ValueTask DisposeAsync()
     {
-        // Do not change this code. Put cleanup code in 'Dispose(bool disposing)' method
-        Dispose(disposing: true);
+        await DisposeAsync(disposing: true);
         GC.SuppressFinalize(this);
     }
 }
