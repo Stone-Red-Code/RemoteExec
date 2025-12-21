@@ -16,7 +16,7 @@ public class RemoteExecutionHub(ILogger<RemoteExecutionHub> logger) : Hub
     private static readonly ConcurrentDictionary<Guid, TaskCompletionSource<byte[]>> pendingAssemblyRequests = new();
 
     // Track pending assembly requests per connection to avoid duplicate requests
-    private static readonly ConcurrentDictionary<string, ConcurrentDictionary<string, Task<byte[]>>> pendingAssemblyRequestsByConnection = new();
+    private static readonly ConcurrentDictionary<string, ConcurrentDictionary<string, Lazy<Task<Assembly>>>> pendingAssemblyRequestsByConnection = new();
 
     private static ServerMetrics? lastMetrics;
     private static DateTime lastMetricsTimestamp;
@@ -31,7 +31,7 @@ public class RemoteExecutionHub(ILogger<RemoteExecutionHub> logger) : Hub
         RemoteJobAssemblyLoadContext assemblyLoadContext = new RemoteJobAssemblyLoadContext($"RemoteJob_{Guid.NewGuid()}");
 
         _ = connections.TryAdd(Context.ConnectionId, assemblyLoadContext);
-        _ = pendingAssemblyRequestsByConnection.TryAdd(Context.ConnectionId, new ConcurrentDictionary<string, Task<byte[]>>());
+        _ = pendingAssemblyRequestsByConnection.TryAdd(Context.ConnectionId, new ConcurrentDictionary<string, Lazy<Task<Assembly>>>());
 
         logger.LogInformation("Connection {ConnectionId} established", Context.ConnectionId);
 
@@ -113,15 +113,11 @@ public class RemoteExecutionHub(ILogger<RemoteExecutionHub> logger) : Hub
                 throw new InvalidOperationException("Connection not found");
             }
 
+            // Check if assembly is already loaded in the context
             Assembly? assembly = assemblyLoadContext.Assemblies.FirstOrDefault(a => a.GetName().FullName == req.AssemblyName);
 
-            assembly ??= await RequestAssemblyAsync(req.AssemblyName);
-
-            if (!assemblyLoadContext.Assemblies.Contains(assembly))
-            {
-                using MemoryStream ms = new MemoryStream(await GetAssemblyBytesAsync(assembly));
-                assembly = assemblyLoadContext.LoadFromStream(ms);
-            }
+            // If not loaded, request and load it into the context
+            assembly ??= await LoadAssemblyAsync(req.AssemblyName, assemblyLoadContext);
 
             Type type = assembly.GetType(req.TypeName, throwOnError: true)!;
 
@@ -182,7 +178,6 @@ public class RemoteExecutionHub(ILogger<RemoteExecutionHub> logger) : Hub
                 Type returnType = method.ReturnType;
                 if (returnType.IsGenericType && returnType.GetGenericTypeDefinition() == typeof(Task<>))
                 {
-                    // For Task<T>, get the Result property
                     PropertyInfo resultProperty = returnType.GetProperty("Result")!;
                     result = resultProperty.GetValue(taskResult);
                 }
@@ -254,19 +249,14 @@ public class RemoteExecutionHub(ILogger<RemoteExecutionHub> logger) : Hub
     {
         Process currentProcess = Process.GetCurrentProcess();
 
-        // Capture current values
         DateTime currentTime = DateTime.UtcNow;
         TimeSpan currentProcessorTime = currentProcess.TotalProcessorTime;
 
-        // Calculate the difference since the last check
         double elapsedMs = (currentTime - lastMetricsTimestamp).TotalMilliseconds;
         double cpuMsUsed = (currentProcessorTime - lastTotalProcessorTime).TotalMilliseconds;
 
-        // Calculate percentage: (Time Used / Time Elapsed) / Cores
-        // We multiply by 100 to get a 0-100 scale
         double cpuUsagePercent = cpuMsUsed / elapsedMs / Environment.ProcessorCount * 100;
 
-        // Update static variables for the next call
         lastMetricsTimestamp = currentTime;
         lastTotalProcessorTime = currentProcessorTime;
 
@@ -282,18 +272,20 @@ public class RemoteExecutionHub(ILogger<RemoteExecutionHub> logger) : Hub
         };
     }
 
-    private async Task<Assembly> RequestAssemblyAsync(string assemblyName)
+    private async Task<Assembly> LoadAssemblyAsync(string assemblyName, RemoteJobAssemblyLoadContext assemblyLoadContext)
     {
         try
         {
-            if (!pendingAssemblyRequestsByConnection.TryGetValue(Context.ConnectionId, out ConcurrentDictionary<string, Task<byte[]>>? connectionPendingRequests))
+            if (!pendingAssemblyRequestsByConnection.TryGetValue(Context.ConnectionId, out ConcurrentDictionary<string, Lazy<Task<Assembly>>>? connectionPendingRequests))
             {
                 throw new InvalidOperationException("Connection not found");
             }
 
-            Task<byte[]> assemblyBytesTask = connectionPendingRequests.GetOrAdd(assemblyName, key =>
+            // Use Lazy<Task<T>> pattern to ensure only one request is made
+            // The Lazy.Value is only evaluated once, even if multiple threads access it simultaneously
+            Lazy<Task<Assembly>> lazyTask = connectionPendingRequests.GetOrAdd(assemblyName, key =>
             {
-                return Task.Run(async () =>
+                return new Lazy<Task<Assembly>>(() => Task.Run(async () =>
                 {
                     try
                     {
@@ -304,60 +296,26 @@ public class RemoteExecutionHub(ILogger<RemoteExecutionHub> logger) : Hub
 
                         await Clients.Caller.SendAsync("RequestAssembly", key, guid);
 
-                        // Wait for the assembly with a timeout
-                        return await tcs.Task.WaitAsync(TimeSpan.FromSeconds(30));
+                        byte[] assemblyBytes = await tcs.Task.WaitAsync(TimeSpan.FromSeconds(30));
+
+                        using MemoryStream ms = new MemoryStream(assemblyBytes);
+                        return assemblyLoadContext.LoadFromStream(ms);
                     }
                     finally
                     {
                         _ = connectionPendingRequests.TryRemove(key, out _);
                     }
-                });
+                }));
             });
 
-            byte[] assemblyBytes = await assemblyBytesTask;
-
-            using MemoryStream ms = new MemoryStream(assemblyBytes);
-            return Assembly.Load(assemblyBytes);
+            // All callers will await the same Task
+            return await lazyTask.Value;
         }
         catch (Exception ex)
         {
-            logger.LogError(ex, "Error requesting assembly {Assembly}", assemblyName);
+            logger.LogError(ex, "Error loading assembly {Assembly}", assemblyName);
             throw;
         }
-    }
-
-    private async Task<byte[]> GetAssemblyBytesAsync(Assembly assembly)
-    {
-        string assemblyName = assembly.GetName().FullName!;
-
-        if (!pendingAssemblyRequestsByConnection.TryGetValue(Context.ConnectionId, out ConcurrentDictionary<string, Task<byte[]>>? connectionPendingRequests))
-        {
-            throw new InvalidOperationException("Connection not found");
-        }
-
-        Task<byte[]> assemblyBytesTask = connectionPendingRequests.GetOrAdd(assemblyName, key =>
-        {
-            return Task.Run(async () =>
-            {
-                try
-                {
-                    Guid guid = Guid.NewGuid();
-                    TaskCompletionSource<byte[]> tcs = new TaskCompletionSource<byte[]>();
-
-                    _ = pendingAssemblyRequests.TryAdd(guid, tcs);
-
-                    await Clients.Caller.SendAsync("RequestAssembly", key, guid);
-
-                    return await tcs.Task.WaitAsync(TimeSpan.FromSeconds(30));
-                }
-                finally
-                {
-                    _ = connectionPendingRequests.TryRemove(key, out _);
-                }
-            });
-        });
-
-        return await assemblyBytesTask;
     }
 
     private async Task PreLoadReferencedAssembliesAsync(RemoteJobAssemblyLoadContext assemblyLoadContext, Assembly assembly)
@@ -384,11 +342,7 @@ public class RemoteExecutionHub(ILogger<RemoteExecutionHub> logger) : Hub
                 }
                 catch
                 {
-                    Assembly tempAssembly = await RequestAssemblyAsync(referencedAssembly.FullName!);
-                    byte[] assemblyBytes = await GetAssemblyBytesAsync(tempAssembly);
-
-                    using MemoryStream ms = new MemoryStream(assemblyBytes);
-                    _ = assemblyLoadContext.LoadFromStream(ms);
+                    _ = await LoadAssemblyAsync(referencedAssembly.FullName!, assemblyLoadContext);
                 }
             }
             catch (Exception ex)
