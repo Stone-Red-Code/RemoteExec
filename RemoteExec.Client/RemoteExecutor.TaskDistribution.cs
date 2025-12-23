@@ -79,24 +79,6 @@ public partial class RemoteExecutor
             return null;
         }
 
-        return loadBalancingStrategy switch
-        {
-            LoadBalancingStrategy.ResourceAware => connectedServers.MinBy(s =>
-            {
-                if (s.Metrics == null)
-                {
-                    return double.MaxValue;
-                }
-
-                double cpuScore = s.Metrics.CpuUsage;
-                double activeTaskScore = s.Metrics.ActiveTasks * 10;
-                double backlogScore = s.TaskChannel.Reader.Count * 50;
-
-                return cpuScore + activeTaskScore + backlogScore;
-            }),
-            LoadBalancingStrategy.LeastBacklog => connectedServers.MinBy(s => s.TaskChannel.Reader.Count),
-
-            _ => connectedServers.FirstOrDefault()
-        };
+        return options.Strategy.SelectServer(connectedServers);
     }
 }

@@ -1,4 +1,5 @@
 <Solution>
+  <Project Path="RemoteExec.Client.DependencyInjection/RemoteExec.Client.DependencyInjection.csproj" Id="e9895828-9e57-475e-98ea-2afff271b7e9" />
   <Project Path="RemoteExec.Client/RemoteExec.Client.csproj" Id="8ac1533b-f69a-4b1b-bb3a-fb381cd4bb7b" />
   <Project Path="RemoteExec.Server/RemoteExec.Server.csproj" Id="f88cb8bb-8221-4e5e-880a-0c58e1255602" />
   <Project Path="RemoteExec.Shared/RemoteExec.Shared.csproj" Id="99317a9c-c0ad-42a2-a830-56aa9c6b9dd4" />

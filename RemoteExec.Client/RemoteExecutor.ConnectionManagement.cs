@@ -1,6 +1,7 @@
 using Microsoft.AspNetCore.SignalR.Client;
 using Microsoft.Extensions.Logging;
 
+using RemoteExec.Client.Exceptions;
 using RemoteExec.Shared;
 
 using System.Collections.Concurrent;
@@ -92,8 +93,8 @@ public partial class RemoteExecutor
 
     private async Task AttemptReconnectionAsync(ServerConnection server, CancellationToken cancellationToken)
     {
-        int retryDelay = 5000; // Start with 5 seconds
-        int maxRetryDelay = 60000; // Max 1 minute
+        int retryDelay = (int)options.ServerReconnectInitialDelay.TotalMilliseconds;
+        int maxRetryDelay = (int)options.ServerReconnectMaxDelay.TotalMilliseconds;
 
         while (!cancellationToken.IsCancellationRequested && server.Connection.State == HubConnectionState.Disconnected)
         {
@@ -151,8 +152,17 @@ public partial class RemoteExecutor
         {
             if (taskDict.TryRemove(id, out PendingTask? task) && pendingResults.ContainsKey(id))
             {
-                globalQueue.Add(task);
-                count++;
+                task.RetryCount++;
+
+                if (task.RetryCount <= options.MaxTaskRetries)
+                {
+                    globalQueue.Add(task);
+                    count++;
+                }
+                else if (pendingResults.TryRemove(id, out TaskCompletionSource<RemoteExecutionResult>? tcs))
+                {
+                    tcs.SetException(new MaxRetriesException("Max retry attempts reached."));
+                }
             }
         }
 

@@ -19,7 +19,7 @@ await singleHostExecutor.StartAsync();
 
 await Parallel.ForAsync(0, 1000, async (i, cancellationToken) =>
 {
-    int r = await singleHostExecutor.Execute<Func<int, int, Task<int>>, int>(Multiply, i, i + 1);
+    int r = await singleHostExecutor.ExecuteAsync<Func<int, int, Task<int>>, int>(Multiply, i, i + 1);
     Console.WriteLine($"Multiply {i} * {i + 1} = {r}");
 });
 

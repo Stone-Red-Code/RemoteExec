@@ -2,6 +2,7 @@
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 
+using RemoteExec.Client.Exceptions;
 using RemoteExec.Shared;
 
 using System.Collections.Concurrent;
@@ -12,8 +13,8 @@ namespace RemoteExec.Client;
 
 public partial class RemoteExecutor : IAsyncDisposable
 {
+    private readonly BlockingCollection<PendingTask> globalQueue;
     private readonly List<ServerConnection> servers = [];
-    private readonly BlockingCollection<PendingTask> globalQueue = [];
     private readonly ConcurrentDictionary<Guid, TaskCompletionSource<RemoteExecutionResult>> pendingResults = new();
     private readonly ConcurrentDictionary<ServerConnection, ConcurrentDictionary<Guid, PendingTask>> serverAssignedTasks = new();
 
@@ -21,38 +22,65 @@ public partial class RemoteExecutor : IAsyncDisposable
     private CancellationTokenSource distributorCts = new();
     private Task? distributorTask;
 
-    private readonly LoadBalancingStrategy loadBalancingStrategy;
+    private readonly RemoteExecutorOptions options = new();
     private readonly ILogger logger;
 
     private bool disposedValue;
 
     public event EventHandler<ServerMetricsUpdatedEventArgs>? MetricsUpdated;
 
-    public RemoteExecutor(string url) : this([url], LoadBalancingStrategy.ResourceAware, NullLogger.Instance)
+    public RemoteExecutor(string url) : this([url], new RemoteExecutorOptions(), NullLogger.Instance)
     {
     }
 
-    public RemoteExecutor(string url, ILogger logger) : this([url], LoadBalancingStrategy.ResourceAware, logger)
+    public RemoteExecutor(string url, ILogger logger) : this([url], new RemoteExecutorOptions(), logger)
     {
     }
 
-    public RemoteExecutor(string url, LoadBalancingStrategy loadBalancingStrategy) : this([url], loadBalancingStrategy, NullLogger.Instance)
+    public RemoteExecutor(string url, Action<RemoteExecutorOptions> configure) : this([url], NullLogger.Instance, configure)
     {
     }
 
-    public RemoteExecutor(string[] urls) : this(urls, LoadBalancingStrategy.ResourceAware, NullLogger.Instance)
+    public RemoteExecutor(string url, ILogger logger, Action<RemoteExecutorOptions> configure) : this([url], logger, configure)
     {
     }
 
-    public RemoteExecutor(string[] urls, LoadBalancingStrategy loadBalancingStrategy) : this(urls, loadBalancingStrategy, NullLogger.Instance)
+    public RemoteExecutor(string[] urls) : this(urls, new RemoteExecutorOptions(), NullLogger.Instance)
     {
     }
 
-    public RemoteExecutor(string[] urls, LoadBalancingStrategy loadBalancingStrategy, ILogger logger)
+    public RemoteExecutor(string[] urls, ILogger logger) : this(urls, new RemoteExecutorOptions(), logger)
     {
-        this.loadBalancingStrategy = loadBalancingStrategy;
+    }
+
+    public RemoteExecutor(string[] urls, Action<RemoteExecutorOptions> configure) : this(urls, NullLogger.Instance, configure)
+    {
+    }
+
+    public RemoteExecutor(string[] urls, ILogger logger, Action<RemoteExecutorOptions> configure)
+    {
         this.logger = logger;
 
+        options = new RemoteExecutorOptions();
+        globalQueue = new BlockingCollection<PendingTask>(options.GlobalQueueCapacity);
+
+        configure(options);
+
+        InitializeServers(urls);
+    }
+
+    public RemoteExecutor(string[] urls, RemoteExecutorOptions options, ILogger logger)
+    {
+        this.logger = logger;
+        this.options = options;
+
+        globalQueue = new BlockingCollection<PendingTask>(this.options.GlobalQueueCapacity);
+
+        InitializeServers(urls);
+    }
+
+    private void InitializeServers(string[] urls)
+    {
         foreach (string url in urls)
         {
             Uri baseUri = new(url);
@@ -85,9 +113,9 @@ public partial class RemoteExecutor : IAsyncDisposable
             .ToDictionary(metrics => metrics!.ServerId, metrics => metrics!);
     }
 
-    public async Task<TResult> Execute<TDelegate, TResult>(TDelegate del, params object[] args) where TDelegate : Delegate
+    public async Task<TResult> ExecuteAsync<TDelegate, TResult>(TDelegate @delegate, CancellationToken cancellationToken, params object[] args) where TDelegate : Delegate
     {
-        object? execResult = await Execute(del, args);
+        object? execResult = await ExecuteAsync(@delegate, cancellationToken, args);
 
         if (execResult is TResult typedResult)
         {
@@ -103,11 +131,20 @@ public partial class RemoteExecutor : IAsyncDisposable
         }
     }
 
-    public async Task<object?> Execute<T>(T del, params object[] args) where T : Delegate
+    public async Task<TResult> ExecuteAsync<TDelegate, TResult>(TDelegate @delegate, params object[] args) where TDelegate : Delegate
     {
-        MethodInfo method = del.Method;
+        return await ExecuteAsync<TDelegate, TResult>(@delegate, CancellationToken.None, args);
+    }
+
+    public async Task<object?> ExecuteAsync<T>(T @delegate, CancellationToken cancellationToken, params object[] args) where T : Delegate
+    {
+        MethodInfo method = @delegate.Method;
         Type declaringType = method.DeclaringType!;
         Assembly assembly = declaringType.Assembly;
+
+        using CancellationTokenSource cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, distributorCts.Token);
+        using CancellationTokenSource timeoutCts = new CancellationTokenSource(options.ExecutionTimeout);
+        using CancellationTokenSource finalCts = CancellationTokenSource.CreateLinkedTokenSource(cts.Token, timeoutCts.Token);
 
         if (!method.IsStatic)
         {
@@ -141,14 +178,26 @@ public partial class RemoteExecutor : IAsyncDisposable
 
         globalQueue.Add(pendingTask);
 
-        RemoteExecutionResult result = await tcs.Task;
-
-        if (result.Exception != null)
+        try
         {
-            throw new RemoteExecutionException(result.Exception);
-        }
+            RemoteExecutionResult result = await tcs.Task.WaitAsync(finalCts.Token);
 
-        return result.Result;
+            if (result.Exception != null)
+            {
+                throw new RemoteExecutionException(result.Exception);
+            }
+
+            return result.Result;
+        }
+        finally
+        {
+            _ = pendingResults.TryRemove(taskId, out _);
+        }
+    }
+
+    public Task<object?> ExecuteAsync<T>(T @delegate, params object[] args) where T : Delegate
+    {
+        return ExecuteAsync(@delegate, CancellationToken.None, args);
     }
 
     protected virtual async Task DisposeAsync(bool disposing)
