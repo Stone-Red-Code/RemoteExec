@@ -11,6 +11,9 @@ using System.Text.Json;
 
 namespace RemoteExec.Server.Hubs;
 
+/// <summary>
+/// SignalR hub that handles remote method execution requests from clients.
+/// </summary>
 public class RemoteExecutionHub : Hub
 {
     private static readonly ConcurrentDictionary<string, RemoteJobAssemblyLoadContext> connections = new();
@@ -34,6 +37,12 @@ public class RemoteExecutionHub : Hub
 
     private readonly ILogger<RemoteExecutionHub> logger;
 
+    /// <summary>
+    /// Initializes a new instance of the <see cref="RemoteExecutionHub"/> class.
+    /// </summary>
+    /// <param name="logger">The logger instance.</param>
+    /// <param name="executionOptions">The execution configuration options.</param>
+    /// <param name="metricsOptions">The metrics configuration options.</param>
     public RemoteExecutionHub(ILogger<RemoteExecutionHub> logger, IOptions<ExecutionConfiguration> executionOptions, IOptions<MetricsConfiguration> metricsOptions)
     {
         this.logger = logger;
@@ -49,6 +58,7 @@ public class RemoteExecutionHub : Hub
         }
     }
 
+    /// <inheritdoc/>
     public override Task OnConnectedAsync()
     {
         RemoteJobAssemblyLoadContext assemblyLoadContext = new RemoteJobAssemblyLoadContext($"RemoteJob_{Guid.NewGuid()}");
@@ -61,6 +71,7 @@ public class RemoteExecutionHub : Hub
         return base.OnConnectedAsync();
     }
 
+    /// <inheritdoc/>
     public override Task OnDisconnectedAsync(Exception? exception)
     {
         if (connections.TryRemove(Context.ConnectionId, out RemoteJobAssemblyLoadContext? assemblyLoadContext))
@@ -74,6 +85,10 @@ public class RemoteExecutionHub : Hub
         return base.OnDisconnectedAsync(exception);
     }
 
+    /// <summary>
+    /// Starts processing a stream of tasks from the client.
+    /// </summary>
+    /// <param name="taskStream">The async enumerable stream of tasks to execute.</param>
     public async Task StartTaskStream(IAsyncEnumerable<TaskItem> taskStream)
     {
         logger.LogInformation("Starting task stream for connection {ConnectionId}", Context.ConnectionId);
@@ -119,6 +134,11 @@ public class RemoteExecutionHub : Hub
         }
     }
 
+    /// <summary>
+    /// Executes a single remote method request.
+    /// </summary>
+    /// <param name="req">The execution request.</param>
+    /// <returns>The execution result.</returns>
     public async Task<RemoteExecutionResult> Execute(RemoteExecutionRequest req)
     {
         return await ExecuteTask(req);
@@ -231,6 +251,11 @@ public class RemoteExecutionHub : Hub
         }
     }
 
+    /// <summary>
+    /// Provides assembly bytes to fulfill a pending assembly request.
+    /// </summary>
+    /// <param name="requestId">The unique identifier for the assembly request.</param>
+    /// <param name="assemblyBytes">The assembly binary data.</param>
     public static async Task ProvideAssembly(Guid requestId, byte[] assemblyBytes)
     {
         if (pendingAssemblyRequests.TryRemove(requestId, out TaskCompletionSource<byte[]>? tcs))
@@ -239,11 +264,19 @@ public class RemoteExecutionHub : Hub
         }
     }
 
+    /// <summary>
+    /// Gets the current server metrics.
+    /// </summary>
+    /// <returns>The current server metrics.</returns>
     public async Task<ServerMetrics> GetMetrics()
     {
         return await GetServerMetrics();
     }
 
+    /// <summary>
+    /// Broadcasts server metrics to all connected clients if metrics have changed significantly.
+    /// </summary>
+    /// <param name="hubContext">The hub context for broadcasting.</param>
     public static async Task BroadcastMetricsAsync(IHubContext<RemoteExecutionHub> hubContext)
     {
         ServerMetrics metrics = await GetServerMetrics();

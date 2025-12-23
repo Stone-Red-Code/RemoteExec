@@ -7,12 +7,21 @@ using System.Collections.Concurrent;
 
 namespace RemoteExec.Server.Middleware;
 
+/// <summary>
+/// Middleware that authenticates requests using API keys in the X-API-Key header.
+/// </summary>
 public class ApiKeyAuthenticationMiddleware
 {
     private readonly RequestDelegate _next;
     private readonly ILogger<ApiKeyAuthenticationMiddleware> _logger;
     private readonly ConcurrentDictionary<string, ApiKeyConfiguration> _apiKeys;
 
+    /// <summary>
+    /// Initializes a new instance of the <see cref="ApiKeyAuthenticationMiddleware"/> class.
+    /// </summary>
+    /// <param name="next">The next middleware in the pipeline.</param>
+    /// <param name="authOptions">The authentication configuration options.</param>
+    /// <param name="logger">The logger instance.</param>
     public ApiKeyAuthenticationMiddleware(
         RequestDelegate next,
         IOptionsMonitor<AuthenticationConfiguration> authOptions,
@@ -66,6 +75,10 @@ public class ApiKeyAuthenticationMiddleware
         _logger.LogInformation("Loaded {Count} active API keys", _apiKeys.Count);
     }
 
+    /// <summary>
+    /// Invokes the middleware to authenticate the request.
+    /// </summary>
+    /// <param name="context">The HTTP context for the current request.</param>
     public async Task InvokeAsync(HttpContext context)
     {
         // Skip authentication for health checks

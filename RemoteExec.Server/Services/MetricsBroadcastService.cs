@@ -6,10 +6,14 @@ using RemoteExec.Server.Hubs;
 
 namespace RemoteExec.Server.Services;
 
+/// <summary>
+/// Background service that periodically broadcasts server metrics to all connected clients.
+/// </summary>
 public class MetricsBroadcastService(IHubContext<RemoteExecutionHub> hubContext, ILogger<MetricsBroadcastService> logger, IOptions<MetricsConfiguration> metricsOptions) : BackgroundService
 {
     private readonly TimeSpan broadcastInterval = TimeSpan.FromMilliseconds(metricsOptions.Value.BroadcastIntervalMs);
 
+    /// <inheritdoc/>
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         logger.LogInformation("Metrics broadcast service started with interval {Interval}ms", broadcastInterval.TotalMilliseconds);

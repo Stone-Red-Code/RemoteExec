@@ -10,6 +10,10 @@ namespace RemoteExec.Client;
 
 public partial class RemoteExecutor
 {
+    /// <summary>
+    /// Starts the remote executor, connecting to all configured servers and beginning task distribution.
+    /// </summary>
+    /// <param name="cancellationToken">A cancellation token to cancel the operation.</param>
     public async Task StartAsync(CancellationToken cancellationToken = default)
     {
         // Dispose previous cancellation token source if exists
@@ -40,6 +44,10 @@ public partial class RemoteExecutor
         distributorTask = Task.Run(() => DistributorLoop(distributorCts.Token), distributorCts.Token);
     }
 
+    /// <summary>
+    /// Stops the remote executor, disconnecting from all servers and stopping task distribution.
+    /// </summary>
+    /// <param name="cancellationToken">A cancellation token to cancel the operation.</param>
     public async Task StopAsync(CancellationToken cancellationToken = default)
     {
         logger.LogInformation("Stopping RemoteExecutor...");

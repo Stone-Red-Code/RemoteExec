@@ -1,7 +1,11 @@
 ﻿namespace RemoteExec.Client.LoadBalancingStrategies;
 
+/// <summary>
+/// A load balancing strategy that selects servers based on CPU usage, active tasks, and backlog.
+/// </summary>
 internal class ResourceAwareStrategy : ILoadBalancingStrategy
 {
+    /// <inheritdoc/>
     public ServerConnection? SelectServer(IEnumerable<ServerConnection> availableServers)
     {
         return availableServers.MinBy(s =>

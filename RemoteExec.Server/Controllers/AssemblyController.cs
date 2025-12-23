@@ -4,10 +4,18 @@ using RemoteExec.Server.Hubs;
 
 namespace RemoteExec.Server.Controllers;
 
+/// <summary>
+/// Controller for handling assembly upload requests from clients.
+/// </summary>
 [ApiController]
 [Route("/")]
 public class AssemblyController(ILogger<AssemblyController> logger) : ControllerBase
 {
+    /// <summary>
+    /// Receives an assembly binary from a client in response to an assembly request.
+    /// </summary>
+    /// <param name="requestId">The unique identifier for the assembly request.</param>
+    /// <returns>An action result indicating success or failure.</returns>
     [HttpPost("provide-assembly")]
     public async Task<IActionResult> ProvideAssembly([FromQuery] Guid requestId)
     {

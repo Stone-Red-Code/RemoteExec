@@ -11,6 +11,9 @@ using System.Text.Json;
 
 namespace RemoteExec.Client;
 
+/// <summary>
+/// Manages remote execution of static methods across one or more server connections with load balancing and fault tolerance.
+/// </summary>
 public partial class RemoteExecutor : IAsyncDisposable
 {
     private readonly BlockingCollection<PendingTask> globalQueue;
@@ -27,20 +30,45 @@ public partial class RemoteExecutor : IAsyncDisposable
 
     private bool disposedValue;
 
+    /// <summary>
+    /// Occurs when server metrics are updated.
+    /// </summary>
     public event EventHandler<ServerMetricsUpdatedEventArgs>? MetricsUpdated;
 
+    /// <summary>
+    /// Initializes a new instance of the <see cref="RemoteExecutor"/> class with a single server URL.
+    /// </summary>
+    /// <param name="url">The URL of the remote server.</param>
+    /// <param name="configure">An action to configure the executor options.</param>
     public RemoteExecutor(string url, Action<RemoteExecutorOptions> configure) : this([url], NullLogger.Instance, configure)
     {
     }
 
+    /// <summary>
+    /// Initializes a new instance of the <see cref="RemoteExecutor"/> class with a single server URL and logger.
+    /// </summary>
+    /// <param name="url">The URL of the remote server.</param>
+    /// <param name="logger">The logger instance.</param>
+    /// <param name="configure">An action to configure the executor options.</param>
     public RemoteExecutor(string url, ILogger logger, Action<RemoteExecutorOptions> configure) : this([url], logger, configure)
     {
     }
 
+    /// <summary>
+    /// Initializes a new instance of the <see cref="RemoteExecutor"/> class with multiple server URLs.
+    /// </summary>
+    /// <param name="urls">The URLs of the remote servers.</param>
+    /// <param name="configure">An action to configure the executor options.</param>
     public RemoteExecutor(string[] urls, Action<RemoteExecutorOptions> configure) : this(urls, NullLogger.Instance, configure)
     {
     }
 
+    /// <summary>
+    /// Initializes a new instance of the <see cref="RemoteExecutor"/> class with multiple server URLs and logger.
+    /// </summary>
+    /// <param name="urls">The URLs of the remote servers.</param>
+    /// <param name="logger">The logger instance.</param>
+    /// <param name="configure">An action to configure the executor options.</param>
     public RemoteExecutor(string[] urls, ILogger logger, Action<RemoteExecutorOptions> configure)
     {
         this.logger = logger;
@@ -53,6 +81,12 @@ public partial class RemoteExecutor : IAsyncDisposable
         InitializeServers(urls);
     }
 
+    /// <summary>
+    /// Initializes a new instance of the <see cref="RemoteExecutor"/> class with preconfigured options.
+    /// </summary>
+    /// <param name="urls">The URLs of the remote servers.</param>
+    /// <param name="options">The executor options.</param>
+    /// <param name="logger">The logger instance.</param>
     public RemoteExecutor(string[] urls, RemoteExecutorOptions options, ILogger logger)
     {
         this.logger = logger;
@@ -99,6 +133,10 @@ public partial class RemoteExecutor : IAsyncDisposable
         }
     }
 
+    /// <summary>
+    /// Gets the current metrics for all connected servers.
+    /// </summary>
+    /// <returns>A dictionary mapping server IDs to their metrics.</returns>
     public Dictionary<string, ServerMetrics> GetCurrentServerMetrics()
     {
         return servers
@@ -107,6 +145,15 @@ public partial class RemoteExecutor : IAsyncDisposable
             .ToDictionary(metrics => metrics!.ServerId, metrics => metrics!);
     }
 
+    /// <summary>
+    /// Executes a delegate remotely and returns the strongly-typed result.
+    /// </summary>
+    /// <typeparam name="TDelegate">The delegate type.</typeparam>
+    /// <typeparam name="TResult">The return type.</typeparam>
+    /// <param name="delegate">The delegate to execute.</param>
+    /// <param name="cancellationToken">A cancellation token to cancel the operation.</param>
+    /// <param name="args">The arguments to pass to the method.</param>
+    /// <returns>The result of the remote execution.</returns>
     public async Task<TResult> ExecuteAsync<TDelegate, TResult>(TDelegate @delegate, CancellationToken cancellationToken, params object[] args) where TDelegate : Delegate
     {
         object? execResult = await ExecuteAsync(@delegate, cancellationToken, args);
@@ -125,11 +172,29 @@ public partial class RemoteExecutor : IAsyncDisposable
         }
     }
 
+    /// <summary>
+    /// Executes a delegate remotely and returns the strongly-typed result.
+    /// </summary>
+    /// <typeparam name="TDelegate">The delegate type.</typeparam>
+    /// <typeparam name="TResult">The return type.</typeparam>
+    /// <param name="delegate">The delegate to execute.</param>
+    /// <param name="args">The arguments to pass to the method.</param>
+    /// <returns>The result of the remote execution.</returns>
     public async Task<TResult> ExecuteAsync<TDelegate, TResult>(TDelegate @delegate, params object[] args) where TDelegate : Delegate
     {
         return await ExecuteAsync<TDelegate, TResult>(@delegate, CancellationToken.None, args);
     }
 
+    /// <summary>
+    /// Executes a delegate remotely and returns the result.
+    /// </summary>
+    /// <typeparam name="T">The delegate type.</typeparam>
+    /// <param name="delegate">The delegate to execute. Must be a static method.</param>
+    /// <param name="cancellationToken">A cancellation token to cancel the operation.</param>
+    /// <param name="args">The arguments to pass to the method.</param>
+    /// <returns>The result of the remote execution.</returns>
+    /// <exception cref="InvalidOperationException">Thrown when the delegate is not a static method or uses a dynamic assembly.</exception>
+    /// <exception cref="RemoteExecutionException">Thrown when the remote execution fails.</exception>
     public async Task<object?> ExecuteAsync<T>(T @delegate, CancellationToken cancellationToken, params object[] args) where T : Delegate
     {
         MethodInfo method = @delegate.Method;
@@ -189,11 +254,22 @@ public partial class RemoteExecutor : IAsyncDisposable
         }
     }
 
+    /// <summary>
+    /// Executes a delegate remotely and returns the result.
+    /// </summary>
+    /// <typeparam name="T">The delegate type.</typeparam>
+    /// <param name="delegate">The delegate to execute. Must be a static method.</param>
+    /// <param name="args">The arguments to pass to the method.</param>
+    /// <returns>The result of the remote execution.</returns>
     public Task<object?> ExecuteAsync<T>(T @delegate, params object[] args) where T : Delegate
     {
         return ExecuteAsync(@delegate, CancellationToken.None, args);
     }
 
+    /// <summary>
+    /// Asynchronously disposes the executor and its resources.
+    /// </summary>
+    /// <param name="disposing">True if disposing managed resources.</param>
     protected virtual async Task DisposeAsync(bool disposing)
     {
         if (!disposedValue)
@@ -220,6 +296,7 @@ public partial class RemoteExecutor : IAsyncDisposable
         }
     }
 
+    /// <inheritdoc/>
     public async ValueTask DisposeAsync()
     {
         await DisposeAsync(disposing: true);
