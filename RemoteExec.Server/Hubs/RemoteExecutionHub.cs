@@ -1,5 +1,7 @@
 ﻿using Microsoft.AspNetCore.SignalR;
+using Microsoft.Extensions.Options;
 
+using RemoteExec.Server.Configuration;
 using RemoteExec.Shared;
 
 using System.Collections.Concurrent;
@@ -9,7 +11,7 @@ using System.Text.Json;
 
 namespace RemoteExec.Server.Hubs;
 
-public class RemoteExecutionHub(ILogger<RemoteExecutionHub> logger) : Hub
+public class RemoteExecutionHub : Hub
 {
     private static readonly ConcurrentDictionary<string, RemoteJobAssemblyLoadContext> connections = new();
 
@@ -23,8 +25,29 @@ public class RemoteExecutionHub(ILogger<RemoteExecutionHub> logger) : Hub
     private static TimeSpan lastTotalProcessorTime;
 
     private static int activeTasks = 0;
-    private static readonly int maxConcurrentTasks = Environment.ProcessorCount * 2;
-    private static readonly SemaphoreSlim taskSemaphore = new SemaphoreSlim(maxConcurrentTasks, maxConcurrentTasks);
+    private static int maxConcurrentTasks;
+    private static SemaphoreSlim taskSemaphore = null!;
+
+    private static int assemblyLoadTimeoutSeconds;
+    private static double cpuDifferenceThreshold;
+    private static long memoryDifferenceThreshold;
+
+    private readonly ILogger<RemoteExecutionHub> logger;
+
+    public RemoteExecutionHub(ILogger<RemoteExecutionHub> logger, IOptions<ExecutionConfiguration> executionOptions, IOptions<MetricsConfiguration> metricsOptions)
+    {
+        this.logger = logger;
+
+        // Initialize static configuration values once
+        if (taskSemaphore is null)
+        {
+            maxConcurrentTasks = executionOptions.Value.MaxConcurrentTasks ?? (Environment.ProcessorCount * 2);
+            taskSemaphore = new SemaphoreSlim(maxConcurrentTasks, maxConcurrentTasks);
+            assemblyLoadTimeoutSeconds = executionOptions.Value.AssemblyLoadTimeoutSeconds;
+            cpuDifferenceThreshold = metricsOptions.Value.CpuDifferenceThreshold;
+            memoryDifferenceThreshold = metricsOptions.Value.MemoryDifferenceThreshold;
+        }
+    }
 
     public override Task OnConnectedAsync()
     {
@@ -234,7 +257,7 @@ public class RemoteExecutionHub(ILogger<RemoteExecutionHub> logger) : Hub
             int tasksDiff = Math.Abs(metrics.ActiveTasks - lastMetrics.ActiveTasks);
             int maxTasksDiff = Math.Abs(metrics.MaxConcurrentTasks - lastMetrics.MaxConcurrentTasks);
 
-            if (cpuDiff < 1.0 && memoryDiff < 10 * 1024 * 1024 && connectionsDiff == 0 && tasksDiff == 0 && maxTasksDiff == 0)
+            if (cpuDiff < cpuDifferenceThreshold && memoryDiff < memoryDifferenceThreshold && connectionsDiff == 0 && tasksDiff == 0 && maxTasksDiff == 0)
             {
                 return; // No significant change
             }
@@ -296,7 +319,7 @@ public class RemoteExecutionHub(ILogger<RemoteExecutionHub> logger) : Hub
 
                         await Clients.Caller.SendAsync("RequestAssembly", key, guid);
 
-                        byte[] assemblyBytes = await tcs.Task.WaitAsync(TimeSpan.FromSeconds(30));
+                        byte[] assemblyBytes = await tcs.Task.WaitAsync(TimeSpan.FromSeconds(assemblyLoadTimeoutSeconds));
 
                         using MemoryStream ms = new MemoryStream(assemblyBytes);
                         return assemblyLoadContext.LoadFromStream(ms);

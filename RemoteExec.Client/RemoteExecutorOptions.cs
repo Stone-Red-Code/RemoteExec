@@ -6,6 +6,8 @@ public class RemoteExecutorOptions
 {
     public ILoadBalancingStrategy Strategy { get; set; } = new ResourceAwareStrategy();
 
+    public string ApiKey { get; set; } = string.Empty;
+
     // How long to wait for a result before throwing a TimeoutException
     public TimeSpan ExecutionTimeout { get; set; } = TimeSpan.FromMinutes(5);
 

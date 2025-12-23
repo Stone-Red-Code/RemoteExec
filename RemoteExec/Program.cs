@@ -3,7 +3,10 @@
 using RemoteExec.Client;
 
 // Single host example
-RemoteExecutor singleHostExecutor = new RemoteExecutor("https://localhost:5001/remote");
+RemoteExecutor singleHostExecutor = new RemoteExecutor("https://localhost:5001/remote", configure =>
+{
+    configure.ApiKey = "dev-api-key-1";
+});
 
 singleHostExecutor.MetricsUpdated += (sender, e) =>
 {

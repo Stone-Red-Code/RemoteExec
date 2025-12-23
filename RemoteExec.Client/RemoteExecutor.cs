@@ -22,34 +22,18 @@ public partial class RemoteExecutor : IAsyncDisposable
     private CancellationTokenSource distributorCts = new();
     private Task? distributorTask;
 
-    private readonly RemoteExecutorOptions options = new();
+    private readonly RemoteExecutorOptions options;
     private readonly ILogger logger;
 
     private bool disposedValue;
 
     public event EventHandler<ServerMetricsUpdatedEventArgs>? MetricsUpdated;
 
-    public RemoteExecutor(string url) : this([url], new RemoteExecutorOptions(), NullLogger.Instance)
-    {
-    }
-
-    public RemoteExecutor(string url, ILogger logger) : this([url], new RemoteExecutorOptions(), logger)
-    {
-    }
-
     public RemoteExecutor(string url, Action<RemoteExecutorOptions> configure) : this([url], NullLogger.Instance, configure)
     {
     }
 
     public RemoteExecutor(string url, ILogger logger, Action<RemoteExecutorOptions> configure) : this([url], logger, configure)
-    {
-    }
-
-    public RemoteExecutor(string[] urls) : this(urls, new RemoteExecutorOptions(), NullLogger.Instance)
-    {
-    }
-
-    public RemoteExecutor(string[] urls, ILogger logger) : this(urls, new RemoteExecutorOptions(), logger)
     {
     }
 
@@ -81,13 +65,21 @@ public partial class RemoteExecutor : IAsyncDisposable
 
     private void InitializeServers(string[] urls)
     {
+        if (string.IsNullOrWhiteSpace(options.ApiKey))
+        {
+            throw new InvalidOperationException("API Key is required. Configure it in RemoteExecutorOptions.");
+        }
+
         foreach (string url in urls)
         {
             Uri baseUri = new(url);
             Uri signalRUri = new(baseUri, "/remote");
 
             HubConnection connection = new HubConnectionBuilder()
-                .WithUrl(signalRUri)
+                .WithUrl(signalRUri, httpOptions =>
+                {
+                    httpOptions.Headers["X-API-Key"] = options.ApiKey;
+                })
                 .ConfigureLogging(logging =>
                 {
                     _ = logging.AddProvider(new RemoteExecLoggerProvider(logger));
@@ -98,6 +90,8 @@ public partial class RemoteExecutor : IAsyncDisposable
             {
                 BaseAddress = baseUri
             };
+
+            httpClient.DefaultRequestHeaders.Add("X-API-Key", options.ApiKey);
 
             ServerConnection serverConnection = new ServerConnection(connection, httpClient);
             servers.Add(serverConnection);
