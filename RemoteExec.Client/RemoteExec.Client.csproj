@@ -16,4 +16,10 @@
     <ProjectReference Include="..\RemoteExec.Shared\RemoteExec.Shared.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <ProjectReference Include="..\RemoteExec.Generators\RemoteExec.Generators.csproj"
+                      OutputItemType="Analyzer"
+                      ReferenceOutputAssembly="false" />
+  </ItemGroup>
+
 </Project>

@@ -22,8 +22,11 @@ await singleHostExecutor.StartAsync();
 
 await Parallel.ForAsync(0, 1000, async (i, cancellationToken) =>
 {
-    int r = await singleHostExecutor.ExecuteAsync<Func<int, int, Task<int>>, int>(Multiply, i, i + 1);
+    int r = await singleHostExecutor.ExecuteAsync(Multiply, i, i + 1, cancellationToken);
     Console.WriteLine($"Multiply {i} * {i + 1} = {r}");
+
+    int s = await singleHostExecutor.ExecuteAsync(Add, i, i + 1, cancellationToken);
+    Console.WriteLine($"Add {i} + {i + 1} = {s}");
 });
 
 await singleHostExecutor.StopAsync();
@@ -32,4 +35,9 @@ static async Task<int> Multiply(int x, int y)
 {
     await Task.Delay(Random.Shared.Next(100, 500));
     return x.Multiply(y);
+}
+
+static int Add(int x, int y)
+{
+    return x + y;
 }
