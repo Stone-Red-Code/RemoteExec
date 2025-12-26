@@ -3,7 +3,7 @@ using Microsoft.Extensions.Options;
 
 using RemoteExec.Server.Configuration;
 using RemoteExec.Server.Services;
-using RemoteExec.Shared;
+using RemoteExec.Shared.Models;
 
 using System.Collections.Concurrent;
 using System.Diagnostics;
@@ -126,6 +126,10 @@ public class RemoteExecutionHub : Hub
                         RemoteExecutionResult result = await ExecuteTask(taskItem.Request);
                         await Clients.Caller.SendAsync("TaskResult", taskItem.TaskId, result);
                     }
+                    catch (ObjectDisposedException ex)
+                    {
+                        logger.LogWarning(ex, "Connection {ConnectionId} disposed while processing task {TaskId}", Context.ConnectionId, taskItem.TaskId);
+                    }
                     catch (Exception ex)
                     {
                         logger.LogError(ex, "Error processing task {TaskId}", taskItem.TaskId);
@@ -144,7 +148,7 @@ public class RemoteExecutionHub : Hub
         }
         catch (OperationCanceledException ex)
         {
-            logger.LogError(ex, "Task stream for connection {ConnectionId} was canceled", Context.ConnectionId);
+            logger.LogInformation(ex, "Task stream for connection {ConnectionId} was canceled", Context.ConnectionId);
         }
         catch (Exception ex)
         {
@@ -300,7 +304,8 @@ public class RemoteExecutionHub : Hub
         catch (Exception ex)
         {
             logger.LogError(ex, "Error loading assembly {Assembly}", assemblyName);
-            throw;
         }
+
+        return [];
     }
 }

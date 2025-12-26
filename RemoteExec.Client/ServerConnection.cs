@@ -1,6 +1,6 @@
 using Microsoft.AspNetCore.SignalR.Client;
 
-using RemoteExec.Shared;
+using RemoteExec.Shared.Models;
 
 using System.Threading.Channels;
 

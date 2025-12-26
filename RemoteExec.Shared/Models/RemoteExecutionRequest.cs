@@ -1,4 +1,4 @@
-﻿namespace RemoteExec.Shared;
+﻿namespace RemoteExec.Shared.Models;
 
 /// <summary>
 /// Represents a request to execute a static method on a remote server.

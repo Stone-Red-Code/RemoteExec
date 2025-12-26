@@ -1,4 +1,4 @@
-using RemoteExec.Shared;
+using RemoteExec.Shared.Models;
 
 namespace RemoteExec.Client;
 

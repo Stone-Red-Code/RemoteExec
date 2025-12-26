@@ -1,4 +1,4 @@
-namespace RemoteExec.Shared;
+namespace RemoteExec.Shared.Models;
 
 /// <summary>
 /// Represents performance and status metrics for a remote execution server.

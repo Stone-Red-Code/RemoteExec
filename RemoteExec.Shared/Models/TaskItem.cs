@@ -1,4 +1,4 @@
-﻿namespace RemoteExec.Shared;
+﻿namespace RemoteExec.Shared.Models;
 
 /// <summary>
 /// Represents a task item in the execution stream, combining a task ID with its execution request.

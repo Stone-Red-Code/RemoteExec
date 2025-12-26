@@ -1,4 +1,4 @@
-﻿namespace RemoteExec.Shared;
+﻿namespace RemoteExec.Shared.Models;
 
 /// <summary>
 /// Represents the result of a remote method execution.

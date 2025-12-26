@@ -3,7 +3,7 @@ using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 
 using RemoteExec.Client.Exceptions;
-using RemoteExec.Shared;
+using RemoteExec.Shared.Models;
 
 using System.Collections.Concurrent;
 using System.Reflection;

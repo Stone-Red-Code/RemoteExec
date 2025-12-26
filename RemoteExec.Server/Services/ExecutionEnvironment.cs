@@ -1,5 +1,5 @@
 ﻿using RemoteExec.Server.Utilities;
-using RemoteExec.Shared;
+using RemoteExec.Shared.Models;
 
 namespace RemoteExec.Server.Services;
 

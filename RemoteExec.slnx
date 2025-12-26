@@ -4,5 +4,6 @@
   <Project Path="RemoteExec.Generators/RemoteExec.Generators.csproj" Id="71a394a7-22f4-4c59-b91f-744c48161696" />
   <Project Path="RemoteExec.Server/RemoteExec.Server.csproj" Id="f88cb8bb-8221-4e5e-880a-0c58e1255602" />
   <Project Path="RemoteExec.Shared/RemoteExec.Shared.csproj" Id="99317a9c-c0ad-42a2-a830-56aa9c6b9dd4" />
+  <Project Path="RemoteExec.Worker/RemoteExec.Worker.csproj" />
   <Project Path="RemoteExec/RemoteExec.Sample.csproj" />
 </Solution>

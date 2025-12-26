@@ -1,7 +1,7 @@
 using Microsoft.AspNetCore.SignalR.Client;
 using Microsoft.Extensions.Logging;
 
-using RemoteExec.Shared;
+using RemoteExec.Shared.Models;
 
 using System.Collections.Concurrent;
 using System.Reflection;
