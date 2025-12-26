@@ -2,12 +2,11 @@
 using Microsoft.Extensions.Options;
 
 using RemoteExec.Server.Configuration;
+using RemoteExec.Server.Services;
 using RemoteExec.Shared;
 
 using System.Collections.Concurrent;
 using System.Diagnostics;
-using System.Reflection;
-using System.Text.Json;
 
 namespace RemoteExec.Server.Hubs;
 
@@ -16,12 +15,12 @@ namespace RemoteExec.Server.Hubs;
 /// </summary>
 public class RemoteExecutionHub : Hub
 {
-    private static readonly ConcurrentDictionary<string, RemoteJobAssemblyLoadContext> connections = new();
+    private static readonly ConcurrentDictionary<string, ExecutionEnvironment> connections = new();
 
     private static readonly ConcurrentDictionary<Guid, TaskCompletionSource<byte[]>> pendingAssemblyRequests = new();
 
     // Track pending assembly requests per connection to avoid duplicate requests
-    private static readonly ConcurrentDictionary<string, ConcurrentDictionary<string, Lazy<Task<Assembly>>>> pendingAssemblyRequestsByConnection = new();
+    private static readonly ConcurrentDictionary<string, ConcurrentDictionary<string, Lazy<Task<byte[]>>>> pendingAssemblyRequestsByConnection = new();
 
     private static ServerMetrics? lastMetrics;
     private static DateTime lastMetricsTimestamp;
@@ -31,11 +30,13 @@ public class RemoteExecutionHub : Hub
     private static int maxConcurrentTasks;
     private static SemaphoreSlim taskSemaphore = null!;
 
+    private static string? executionEnvironmentName;
     private static int assemblyLoadTimeoutSeconds;
     private static double cpuDifferenceThreshold;
     private static long memoryDifferenceThreshold;
 
     private readonly ILogger<RemoteExecutionHub> logger;
+    private readonly IEnumerable<ExecutionEnvironment> executionEnvironments;
 
     /// <summary>
     /// Initializes a new instance of the <see cref="RemoteExecutionHub"/> class.
@@ -43,15 +44,18 @@ public class RemoteExecutionHub : Hub
     /// <param name="logger">The logger instance.</param>
     /// <param name="executionOptions">The execution configuration options.</param>
     /// <param name="metricsOptions">The metrics configuration options.</param>
-    public RemoteExecutionHub(ILogger<RemoteExecutionHub> logger, IOptions<ExecutionConfiguration> executionOptions, IOptions<MetricsConfiguration> metricsOptions)
+    /// <param name="executionEnvironments">The available execution environments.</param>
+    public RemoteExecutionHub(ILogger<RemoteExecutionHub> logger, IOptions<ExecutionConfiguration> executionOptions, IOptions<MetricsConfiguration> metricsOptions, IEnumerable<ExecutionEnvironment> executionEnvironments)
     {
         this.logger = logger;
+        this.executionEnvironments = executionEnvironments;
 
         // Initialize static configuration values once
         if (taskSemaphore is null)
         {
             maxConcurrentTasks = executionOptions.Value.MaxConcurrentTasks ?? (Environment.ProcessorCount * 2);
             taskSemaphore = new SemaphoreSlim(maxConcurrentTasks, maxConcurrentTasks);
+            executionEnvironmentName = executionOptions.Value.ExecutionEnvironment;
             assemblyLoadTimeoutSeconds = executionOptions.Value.AssemblyLoadTimeoutSeconds;
             cpuDifferenceThreshold = metricsOptions.Value.CpuDifferenceThreshold;
             memoryDifferenceThreshold = metricsOptions.Value.MemoryDifferenceThreshold;
@@ -59,30 +63,44 @@ public class RemoteExecutionHub : Hub
     }
 
     /// <inheritdoc/>
-    public override Task OnConnectedAsync()
+    public override async Task OnConnectedAsync()
     {
-        RemoteJobAssemblyLoadContext assemblyLoadContext = new RemoteJobAssemblyLoadContext($"RemoteJob_{Guid.NewGuid()}");
+        ExecutionEnvironment? executionEnvironment = executionEnvironments.FirstOrDefault(env => env.Name.Equals(executionEnvironmentName, StringComparison.OrdinalIgnoreCase));
 
-        _ = connections.TryAdd(Context.ConnectionId, assemblyLoadContext);
-        _ = pendingAssemblyRequestsByConnection.TryAdd(Context.ConnectionId, new ConcurrentDictionary<string, Lazy<Task<Assembly>>>());
+        if (executionEnvironment is null)
+        {
+            logger.LogError("Execution environment '{ExecutionEnvironment}' not found for connection {ConnectionId}", executionEnvironmentName, Context.ConnectionId);
+            throw new InvalidOperationException($"Execution environment '{executionEnvironmentName}' not found");
+        }
+
+        // Capture Context and Clients to avoid accessing disposed Hub instance
+        HubCallerContext capturedContext = Context;
+        IHubCallerClients capturedClients = Clients;
+
+        executionEnvironment.RequestAssembly += async (sender, e) =>
+        {
+            byte[] assemblyBytes = await RequestAssemblyBytesAsync(e.Value, capturedContext, capturedClients);
+            e.SetCompleted(assemblyBytes);
+        };
+
+        await executionEnvironment.PrepareEnvironmentAsync(Context.ConnectionAborted);
+
+        _ = connections.TryAdd(Context.ConnectionId, executionEnvironment);
+        _ = pendingAssemblyRequestsByConnection.TryAdd(Context.ConnectionId, new());
 
         logger.LogInformation("Connection {ConnectionId} established", Context.ConnectionId);
-
-        return base.OnConnectedAsync();
     }
 
     /// <inheritdoc/>
-    public override Task OnDisconnectedAsync(Exception? exception)
+    public override async Task OnDisconnectedAsync(Exception? exception)
     {
-        if (connections.TryRemove(Context.ConnectionId, out RemoteJobAssemblyLoadContext? assemblyLoadContext))
+        if (connections.TryRemove(Context.ConnectionId, out ExecutionEnvironment? executionEnvironment))
         {
-            assemblyLoadContext.Unload();
+            await executionEnvironment.CleanupEnvironmentAsync(CancellationToken.None);
             logger.LogInformation("Connection {ConnectionId} disconnected", Context.ConnectionId);
         }
 
         _ = pendingAssemblyRequestsByConnection.TryRemove(Context.ConnectionId, out _);
-
-        return base.OnDisconnectedAsync(exception);
     }
 
     /// <summary>
@@ -134,111 +152,23 @@ public class RemoteExecutionHub : Hub
         }
     }
 
-    /// <summary>
-    /// Executes a single remote method request.
-    /// </summary>
-    /// <param name="req">The execution request.</param>
-    /// <returns>The execution result.</returns>
-    public async Task<RemoteExecutionResult> Execute(RemoteExecutionRequest req)
-    {
-        return await ExecuteTask(req);
-    }
-
-    private async Task<RemoteExecutionResult> ExecuteTask(RemoteExecutionRequest req)
+    private async Task<RemoteExecutionResult> ExecuteTask(RemoteExecutionRequest request)
     {
         _ = Interlocked.Increment(ref activeTasks);
 
         try
         {
-            if (!connections.TryGetValue(Context.ConnectionId, out RemoteJobAssemblyLoadContext? assemblyLoadContext))
+            if (!connections.TryGetValue(Context.ConnectionId, out ExecutionEnvironment? executionEnvironment))
             {
-                logger.LogError("Connection {ConnectionId} not found", Context.ConnectionId);
+                logger.LogError("Connection {ConnectionId} not found for executing method {Method} in type {Type}", Context.ConnectionId, request.MethodName, request.TypeName);
                 throw new InvalidOperationException("Connection not found");
             }
 
-            // Check if assembly is already loaded in the context
-            Assembly? assembly = assemblyLoadContext.Assemblies.FirstOrDefault(a => a.GetName().FullName == req.AssemblyName);
-
-            // If not loaded, request and load it into the context
-            assembly ??= await LoadAssemblyAsync(req.AssemblyName, assemblyLoadContext);
-
-            Type type = assembly.GetType(req.TypeName, throwOnError: true)!;
-
-            Type[] argTypes = req.ArgumentTypes
-                .Select(Type.GetType)
-                .ToArray()!;
-
-            MethodInfo? method = type.GetMethod(
-                req.MethodName,
-                BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic,
-                binder: null,
-                argTypes,
-                modifiers: null) ?? throw new MissingMethodException(req.TypeName, req.MethodName);
-
-            // Pre-load all referenced assemblies to avoid triggering Resolving event during Invoke
-            await PreLoadReferencedAssembliesAsync(assemblyLoadContext, assembly);
-
-            ParameterInfo[] parameters = method.GetParameters();
-
-            if (parameters.Length != req.Arguments.Length)
-            {
-                logger.LogError("Argument count mismatch for method {Method} in type {Type} for connection {ConnectionId}", req.MethodName, req.TypeName, Context.ConnectionId);
-                throw new ArgumentException("Argument count mismatch");
-            }
-
-            object?[] invokeArgs = new object?[req.Arguments.Length];
-
-            for (int i = 0; i < invokeArgs.Length; i++)
-            {
-                Type targetType = parameters[i].ParameterType;
-                object arg = req.Arguments[i];
-
-                if (arg is JsonElement je)
-                {
-                    // Deserialize the JSON element into the expected CLR type
-                    invokeArgs[i] = JsonSerializer.Deserialize(je.GetRawText(), targetType);
-                }
-                else if (arg == null)
-                {
-                    invokeArgs[i] = null;
-                }
-                else if (!targetType.IsInstanceOfType(arg))
-                {
-                    // Fallback for simple primitive conversions
-                    invokeArgs[i] = Convert.ChangeType(arg, targetType);
-                }
-                else
-                {
-                    invokeArgs[i] = arg;
-                }
-            }
-
-            object? result = method.Invoke(null, invokeArgs);
-
-            if (result is Task taskResult)
-            {
-                await taskResult.ConfigureAwait(false);
-                Type returnType = method.ReturnType;
-                if (returnType.IsGenericType && returnType.GetGenericTypeDefinition() == typeof(Task<>))
-                {
-                    PropertyInfo resultProperty = returnType.GetProperty("Result")!;
-                    result = resultProperty.GetValue(taskResult);
-                }
-                else
-                {
-                    // For non-generic Task, result is null
-                    result = null;
-                }
-            }
-
-            return new RemoteExecutionResult
-            {
-                Result = result
-            };
+            return await executionEnvironment.ExecuteTaskAsync(request);
         }
         catch (Exception ex)
         {
-            logger.LogError(ex, "Error executing remote method {Method} in type {Type} for connection {ConnectionId}", req.MethodName, req.TypeName, Context.ConnectionId);
+            logger.LogError(ex, "Error executing remote method {Method} in type {Type} for connection {ConnectionId}", request.MethodName, request.TypeName, Context.ConnectionId);
 
             return new RemoteExecutionResult
             {
@@ -251,12 +181,7 @@ public class RemoteExecutionHub : Hub
         }
     }
 
-    /// <summary>
-    /// Provides assembly bytes to fulfill a pending assembly request.
-    /// </summary>
-    /// <param name="requestId">The unique identifier for the assembly request.</param>
-    /// <param name="assemblyBytes">The assembly binary data.</param>
-    public static async Task ProvideAssembly(Guid requestId, byte[] assemblyBytes)
+    internal static async Task ProvideAssembly(Guid requestId, byte[] assemblyBytes)
     {
         if (pendingAssemblyRequests.TryRemove(requestId, out TaskCompletionSource<byte[]>? tcs))
         {
@@ -328,20 +253,20 @@ public class RemoteExecutionHub : Hub
         };
     }
 
-    private async Task<Assembly> LoadAssemblyAsync(string assemblyName, RemoteJobAssemblyLoadContext assemblyLoadContext)
+    private async Task<byte[]> RequestAssemblyBytesAsync(string assemblyName, HubCallerContext context, IHubCallerClients hubCallerClients)
     {
         try
         {
-            if (!pendingAssemblyRequestsByConnection.TryGetValue(Context.ConnectionId, out ConcurrentDictionary<string, Lazy<Task<Assembly>>>? connectionPendingRequests))
+            if (!pendingAssemblyRequestsByConnection.TryGetValue(context.ConnectionId, out ConcurrentDictionary<string, Lazy<Task<byte[]>>>? connectionPendingRequests))
             {
                 throw new InvalidOperationException("Connection not found");
             }
 
             // Use Lazy<Task<T>> pattern to ensure only one request is made
             // The Lazy.Value is only evaluated once, even if multiple threads access it simultaneously
-            Lazy<Task<Assembly>> lazyTask = connectionPendingRequests.GetOrAdd(assemblyName, key =>
+            Lazy<Task<byte[]>> lazyTask = connectionPendingRequests.GetOrAdd(assemblyName, key =>
             {
-                return new Lazy<Task<Assembly>>(() => Task.Run(async () =>
+                return new Lazy<Task<byte[]>>(() => Task.Run(async () =>
                 {
                     try
                     {
@@ -350,16 +275,21 @@ public class RemoteExecutionHub : Hub
 
                         _ = pendingAssemblyRequests.TryAdd(guid, tcs);
 
-                        await Clients.Caller.SendAsync("RequestAssembly", key, guid);
+                        logger.LogInformation("Requesting assembly {Assembly} with RequestId {RequestId} for connection {ConnectionId}", key, guid, context.ConnectionId);
 
-                        byte[] assemblyBytes = await tcs.Task.WaitAsync(TimeSpan.FromSeconds(assemblyLoadTimeoutSeconds));
+                        await hubCallerClients.Caller.SendAsync("RequestAssembly", key, guid);
 
-                        using MemoryStream ms = new MemoryStream(assemblyBytes);
-                        return assemblyLoadContext.LoadFromStream(ms);
+                        return await tcs.Task.WaitAsync(TimeSpan.FromSeconds(assemblyLoadTimeoutSeconds));
                     }
                     finally
                     {
-                        _ = connectionPendingRequests.TryRemove(key, out _);
+                        _ = Task.Run(async () =>
+                        {
+                            // WORKAROUND: Delay to avoid race condition where the same assembly is requested again because the assembly hasn't been loaded yet
+                            // An alternative would be to only remove the request after the client disconnects or after a longer timeout
+                            await Task.Delay(1000);
+                            _ = connectionPendingRequests.TryRemove(key, out _);
+                        });
                     }
                 }));
             });
@@ -371,40 +301,6 @@ public class RemoteExecutionHub : Hub
         {
             logger.LogError(ex, "Error loading assembly {Assembly}", assemblyName);
             throw;
-        }
-    }
-
-    private async Task PreLoadReferencedAssembliesAsync(RemoteJobAssemblyLoadContext assemblyLoadContext, Assembly assembly)
-    {
-        AssemblyName[] referencedAssemblies = assembly.GetReferencedAssemblies();
-
-        foreach (AssemblyName referencedAssembly in referencedAssemblies)
-        {
-            try
-            {
-                // Try to load from the assembly load context first
-                Assembly? loadedAssembly = assemblyLoadContext.Assemblies.FirstOrDefault(a => a.GetName().FullName == referencedAssembly.FullName);
-
-                if (loadedAssembly != null)
-                {
-                    continue; // Already loaded in the context
-                }
-
-                // Try to load from default context (BCL assemblies)
-                try
-                {
-                    _ = assemblyLoadContext.LoadFromAssemblyName(referencedAssembly);
-                    continue; // Successfully loaded from default context
-                }
-                catch
-                {
-                    _ = await LoadAssemblyAsync(referencedAssembly.FullName!, assemblyLoadContext);
-                }
-            }
-            catch (Exception ex)
-            {
-                logger.LogWarning(ex, "Could not pre-load referenced assembly {Assembly}", referencedAssembly.FullName);
-            }
         }
     }
 }

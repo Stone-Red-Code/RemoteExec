@@ -14,6 +14,7 @@ builder.Services.AddHealthChecks();
 builder.Services.Configure<AuthenticationConfiguration>(builder.Configuration.GetSection("Authentication"));
 builder.Services.Configure<ExecutionConfiguration>(builder.Configuration.GetSection("Execution"));
 builder.Services.Configure<MetricsConfiguration>(builder.Configuration.GetSection("Metrics"));
+builder.Services.AddScoped<ExecutionEnvironment, AssemblyLoadContextExecutionEnvironment>();
 
 builder.Services.AddHostedService<MetricsBroadcastService>();
 
