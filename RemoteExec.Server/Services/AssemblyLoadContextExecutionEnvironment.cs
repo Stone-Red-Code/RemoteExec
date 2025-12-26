@@ -31,12 +31,7 @@ public class AssemblyLoadContextExecutionEnvironment : ExecutionEnvironment
             .Select(Type.GetType)
             .ToArray()!;
 
-        MethodInfo? method = type.GetMethod(
-            request.MethodName,
-            BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic,
-            binder: null,
-            argTypes,
-            modifiers: null) ?? throw new MissingMethodException(request.TypeName, request.MethodName);
+        MethodInfo? method = type.GetMethod(request.MethodName, BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic, binder: null, argTypes, modifiers: null) ?? throw new MissingMethodException(request.TypeName, request.MethodName);
 
         // Pre-load all referenced assemblies to avoid triggering Resolving event during Invoke
         await AssemblyUtilities.PreLoadReferencedAssembliesAsync(assemblyLoadContext, assembly, RequestAssemblyAsync);
@@ -57,7 +52,6 @@ public class AssemblyLoadContextExecutionEnvironment : ExecutionEnvironment
 
             if (arg is JsonElement je)
             {
-                // Deserialize the JSON element into the expected CLR type
                 invokeArgs[i] = JsonSerializer.Deserialize(je.GetRawText(), targetType);
             }
             else if (arg == null)
@@ -66,7 +60,6 @@ public class AssemblyLoadContextExecutionEnvironment : ExecutionEnvironment
             }
             else if (!targetType.IsInstanceOfType(arg))
             {
-                // Fallback for simple primitive conversions
                 invokeArgs[i] = Convert.ChangeType(arg, targetType);
             }
             else
@@ -80,7 +73,9 @@ public class AssemblyLoadContextExecutionEnvironment : ExecutionEnvironment
         if (result is Task taskResult)
         {
             await taskResult.ConfigureAwait(false);
+
             Type returnType = method.ReturnType;
+
             if (returnType.IsGenericType && returnType.GetGenericTypeDefinition() == typeof(Task<>))
             {
                 PropertyInfo resultProperty = returnType.GetProperty("Result")!;
@@ -88,7 +83,6 @@ public class AssemblyLoadContextExecutionEnvironment : ExecutionEnvironment
             }
             else
             {
-                // For non-generic Task, result is null
                 result = null;
             }
         }

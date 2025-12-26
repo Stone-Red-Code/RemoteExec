@@ -14,7 +14,7 @@ public class ApiKeyAuthenticationMiddleware
 {
     private readonly RequestDelegate _next;
     private readonly ILogger<ApiKeyAuthenticationMiddleware> _logger;
-    private readonly ConcurrentDictionary<string, ApiKeyConfiguration> _apiKeys;
+    private readonly ConcurrentDictionary<string, ApiKeyConfiguration> apiKeys;
 
     /// <summary>
     /// Initializes a new instance of the <see cref="ApiKeyAuthenticationMiddleware"/> class.
@@ -22,27 +22,20 @@ public class ApiKeyAuthenticationMiddleware
     /// <param name="next">The next middleware in the pipeline.</param>
     /// <param name="authOptions">The authentication configuration options.</param>
     /// <param name="logger">The logger instance.</param>
-    public ApiKeyAuthenticationMiddleware(
-        RequestDelegate next,
-        IOptionsMonitor<AuthenticationConfiguration> authOptions,
-        ILogger<ApiKeyAuthenticationMiddleware> logger)
+    public ApiKeyAuthenticationMiddleware(RequestDelegate next, IOptionsMonitor<AuthenticationConfiguration> authOptions, ILogger<ApiKeyAuthenticationMiddleware> logger)
     {
         _next = next;
         _logger = logger;
+        apiKeys = new ConcurrentDictionary<string, ApiKeyConfiguration>();
 
-        // Build lookup dictionary from configuration
-        _apiKeys = new ConcurrentDictionary<string, ApiKeyConfiguration>();
-
-        // Initial load
         LoadApiKeys(authOptions.CurrentValue);
 
-        // Watch for configuration changes
         _ = authOptions.OnChange(LoadApiKeys);
     }
 
     private void LoadApiKeys(AuthenticationConfiguration config)
     {
-        _apiKeys.Clear();
+        apiKeys.Clear();
 
         if (config.ApiKeys == null || config.ApiKeys.Count == 0)
         {
@@ -58,7 +51,7 @@ public class ApiKeyAuthenticationMiddleware
                 continue;
             }
 
-            if (_apiKeys.TryAdd(apiKey.Key, apiKey))
+            if (apiKeys.TryAdd(apiKey.Key, apiKey))
             {
                 _logger.LogInformation(
                     "Registered API key: {Description}",
@@ -72,7 +65,7 @@ public class ApiKeyAuthenticationMiddleware
             }
         }
 
-        _logger.LogInformation("Loaded {Count} active API keys", _apiKeys.Count);
+        _logger.LogInformation("Loaded {Count} active API keys", apiKeys.Count);
     }
 
     /// <summary>
@@ -89,7 +82,7 @@ public class ApiKeyAuthenticationMiddleware
         }
 
         // Check if any API keys are configured
-        if (_apiKeys.IsEmpty)
+        if (apiKeys.IsEmpty)
         {
             _logger.LogError("No API keys configured. Rejecting request to {Path}", context.Request.Path);
 
@@ -113,7 +106,7 @@ public class ApiKeyAuthenticationMiddleware
         string providedKey = extractedApiKey.ToString();
 
         // Validate API key
-        if (!_apiKeys.TryGetValue(providedKey, out ApiKeyConfiguration? apiKeyConfig))
+        if (!apiKeys.TryGetValue(providedKey, out ApiKeyConfiguration? apiKeyConfig))
         {
             _logger.LogWarning("Invalid API Key provided for request to {Path} from {RemoteIp}",
                 context.Request.Path,

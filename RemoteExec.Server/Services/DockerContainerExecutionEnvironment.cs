@@ -71,14 +71,12 @@ public class DockerContainerExecutionEnvironment : ExecutionEnvironment
 
         try
         {
-            // Get assembly bytes from cache
             if (!assemblyCache.TryGetValue(request.AssemblyName, out byte[]? assemblyBytes))
             {
                 assemblyBytes = await RequestAssemblyAsync(request.AssemblyName);
                 assemblyCache[request.AssemblyName] = assemblyBytes;
             }
 
-            // Prepare execution request
             ContainerExecutionRequest containerRequest = new()
             {
                 AssemblyBytes = Convert.ToBase64String(assemblyBytes),
@@ -90,17 +88,13 @@ public class DockerContainerExecutionEnvironment : ExecutionEnvironment
 
             string requestJson = JsonSerializer.Serialize(containerRequest);
 
-            // Create and start container
             containerId = await CreateAndStartContainerAsync(requestJson, CancellationToken.None);
 
-            // Start monitoring logs for assembly requests in background
             using CancellationTokenSource timeoutCts = new(containerTimeout);
             Task logMonitorTask = MonitorContainerLogsAsync(containerId, timeoutCts.Token);
 
-            // Wait for container to complete with timeout
             ContainerWaitResponse waitResponse = await dockerClient.Containers.WaitContainerAsync(containerId, timeoutCts.Token);
 
-            // Cancel log monitoring
             await timeoutCts.CancelAsync();
 
             try
@@ -124,7 +118,6 @@ public class DockerContainerExecutionEnvironment : ExecutionEnvironment
                 };
             }
 
-            // Parse result from stdout - get last JSON line (filter out assembly protocol lines)
             string[] lines = stdout.Split('\n', StringSplitOptions.RemoveEmptyEntries);
             string? resultLine = lines.LastOrDefault(l =>
             {
@@ -181,16 +174,12 @@ public class DockerContainerExecutionEnvironment : ExecutionEnvironment
     {
         try
         {
-            MultiplexedStream logStream = await dockerClient.Containers.GetContainerLogsAsync(
-                containerId,
-                false,
-                new ContainerLogsParameters
-                {
-                    ShowStdout = true,
-                    ShowStderr = false,
-                    Follow = true
-                },
-                cancellationToken);
+            MultiplexedStream logStream = await dockerClient.Containers.GetContainerLogsAsync(containerId, false, new ContainerLogsParameters
+            {
+                ShowStdout = true,
+                ShowStderr = false,
+                Follow = true
+            }, cancellationToken);
 
             byte[] buffer = new byte[4096];
             StringBuilder lineBuffer = new();
@@ -207,7 +196,6 @@ public class DockerContainerExecutionEnvironment : ExecutionEnvironment
                 string text = Encoding.UTF8.GetString(buffer, 0, result.Count);
                 _ = lineBuffer.Append(text);
 
-                // Process complete lines
                 string bufferContent = lineBuffer.ToString();
                 int lastNewline = bufferContent.LastIndexOf('\n');
 
@@ -336,14 +324,11 @@ public class DockerContainerExecutionEnvironment : ExecutionEnvironment
 
     private async Task<string> GetContainerLogsAsync(string containerId)
     {
-        MultiplexedStream logStream = await dockerClient.Containers.GetContainerLogsAsync(
-            containerId,
-            false,
-            new ContainerLogsParameters
-            {
-                ShowStdout = true,
-                ShowStderr = true
-            });
+        MultiplexedStream logStream = await dockerClient.Containers.GetContainerLogsAsync(containerId, false, new ContainerLogsParameters
+        {
+            ShowStdout = true,
+            ShowStderr = true
+        });
 
         StringBuilder output = new();
         byte[] buffer = new byte[4096];
@@ -365,15 +350,8 @@ public class DockerContainerExecutionEnvironment : ExecutionEnvironment
     {
         try
         {
-            // Stop container if still running
-            _ = await dockerClient.Containers.StopContainerAsync(
-                containerId,
-                new ContainerStopParameters { WaitBeforeKillSeconds = 5 });
-
-            // Remove container
-            await dockerClient.Containers.RemoveContainerAsync(
-                containerId,
-                new ContainerRemoveParameters { Force = true, RemoveVolumes = true });
+            _ = await dockerClient.Containers.StopContainerAsync(containerId, new ContainerStopParameters { WaitBeforeKillSeconds = 5 });
+            await dockerClient.Containers.RemoveContainerAsync(containerId, new ContainerRemoveParameters { Force = true, RemoveVolumes = true });
 
             _ = runningContainers.TryRemove(containerId, out _);
         }

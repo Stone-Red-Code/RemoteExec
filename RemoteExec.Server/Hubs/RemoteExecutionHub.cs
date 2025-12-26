@@ -115,10 +115,8 @@ public class RemoteExecutionHub : Hub
         {
             await foreach (TaskItem taskItem in taskStream.WithCancellation(Context.ConnectionAborted))
             {
-                // Wait for available slot before processing
                 await taskSemaphore.WaitAsync(Context.ConnectionAborted);
 
-                // Process task asynchronously without blocking the stream
                 _ = Task.Run(async () =>
                 {
                     try

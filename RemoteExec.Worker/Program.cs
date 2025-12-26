@@ -45,12 +45,7 @@ public static class Program
                 .Select(Type.GetType)
                 .ToArray()!;
 
-            MethodInfo? method = type.GetMethod(
-                request.MethodName,
-                BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic,
-                binder: null,
-                argTypes,
-                modifiers: null);
+            MethodInfo? method = type.GetMethod(request.MethodName, BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic, binder: null, argTypes, modifiers: null);
 
             if (method == null)
             {
