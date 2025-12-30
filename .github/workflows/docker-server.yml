@@ -23,6 +23,6 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
       - name: Build the Docker image
-        run: docker build . -t ${{ secrets.DOCKERHUB_USERNAME }}/remoteexec-server:latest -f ./RemoteExec.Server/DockerFile
+        run: docker build . -t ${{ secrets.DOCKERHUB_USERNAME }}/remoteexec-server:latest -f ./RemoteExec.Server/Dockerfile
       - name: Push the Docker image
         run: docker push ${{ secrets.DOCKERHUB_USERNAME }}/remoteexec-server:latest
