@@ -1,6 +1,7 @@
 name: Build and Push Docker Server Image
 
 on:
+  workflow_dispatch:
   push:
     paths:
       - 'src/RemoteExec.Server/**'
