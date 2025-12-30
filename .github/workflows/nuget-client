@@ -1,0 +1,36 @@
+name: Build and Push NuGet Client Package
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'src/RemoteExec.Client/**'
+    branches:
+      - main
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    name: Build & Push Client NuGet Package
+    defaults:
+      run:
+        working-directory: "./src/RemoteExec.Client"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Restore dependencies
+        run: dotnet restore RemoteExec.Client.csproj
+
+      - name: Build Client
+        run: dotnet build RemoteExec.Client.csproj --configuration Release --no-restore
+
+      - name: Pack NuGet package
+        run: dotnet pack RemoteExec.Client.csproj --configuration Release --no-restore --output ./nuget
+
+      - name: Push package to NuGet.org
+        run: dotnet nuget push ./nuget/*.nupkg --api-key ${{ secrets.NUGET_API_KEY }} --source https://api.nuget.org/v3/index.json
