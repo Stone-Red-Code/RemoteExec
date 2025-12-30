@@ -9,7 +9,6 @@ on:
 
 jobs:
   build:
-    if: contains(github.event.head_commit.modified, 'src/RemoteExec.Worker/') || contains(github.event.head_commit.added, 'src/RemoteExec.Worker/') || contains(github.event.head_commit.removed, 'src/RemoteExec.Worker/')
     runs-on: ubuntu-latest
     name: Build & Push Worker Image
     steps:
