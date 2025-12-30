@@ -6,15 +6,14 @@
 
 RemoteExec is a distributed computing platform that allows you to execute C# methods remotely across multiple servers using SignalR.
 
-It enables seamless execution of static C# methods across multiple remote servers, featuring automatic load balancing, failover, real-time metrics, API key authentication.  
-RemoteExec aims to make it easy to scale compute workloads or distribute jobs—no cloud lock-in and no complex configuration.
+It enables seamless execution of static C# methods across multiple remote servers, featuring automatic load balancing, failover, real-time metrics and API key authentication.  
+RemoteExec aims to make it easy to scale compute workloads or distribute jobs, no cloud lock-in and no complex configuration.
 
 **Possible use cases include:**
 
 - Parallel scientific/data computing
 - Scaling out microservices and custom workflows
 - Running distributed jobs in CI/CD pipelines
-- Remotely triggering trusted code in a secure and observable way
 
 ## Usage
 
