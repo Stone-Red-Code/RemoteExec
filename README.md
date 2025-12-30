@@ -1,5 +1,3 @@
-# RemoteExec
-
 ![RemoteExec](https://socialify.git.ci/Stone-Red-Code/RemoteExec/image?custom_description=A+distributed+remote+execution+platform+for+C%23.&description=1&forks=1&issues=1&logo=https%3A%2F%2Fgithub.com%2FStone-Red-Code%2FRemoteExec%2Fblob%2Fmain%2Flogo.svg%3Fraw%3Dtrue&name=1&pattern=Signal&pulls=1&stargazers=1&theme=Auto)
 
 ## What is it?
