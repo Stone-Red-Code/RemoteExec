@@ -1,6 +1,6 @@
 services:
   remoteexec-server:
-    image: stonered/remoteexec:latest
+    image: stonered/remoteexec-server:latest
     container_name: remoteexec-server
     restart: unless-stopped
     environment:
@@ -10,7 +10,7 @@ services:
       - "8080:80"
     volumes:
       # Application configuration (edit the template below then mount here)
-      - ./RemoteExec.Server/appsettings.docker.json:/app/appsettings.json:ro
+      - ./RemoteExec.Server/appsettings.docker.json:/appsettings.json:ro
       # Mount docker socket only if you will use Execution.ExecutionEnvironment = "DockerContainer"
       - /var/run/docker.sock:/var/run/docker.sock:ro
       # Optional: timezone sync
