@@ -1,0 +1,28 @@
+services:
+  remoteexec-server:
+    image: stonered/remoteexec:latest
+    container_name: remoteexec-server
+    restart: unless-stopped
+    environment:
+      - ASPNETCORE_ENVIRONMENT=Production
+      - ASPNETCORE_URLS=http://+:80
+    ports:
+      - "8080:80"
+    volumes:
+      # Application configuration (edit the template below then mount here)
+      - ./RemoteExec.Server/appsettings.docker.json:/app/appsettings.json:ro
+      # Mount docker socket only if you will use Execution.ExecutionEnvironment = "DockerContainer"
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      # Optional: timezone sync
+      - /etc/localtime:/etc/localtime:ro
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
