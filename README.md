@@ -1,6 +1,6 @@
 # RemoteExec
 
-![RemoteExec](https://socialify.git.ci/Stone-Red-Code/RemoteExec/image?custom_description=A+distributed+remote+execution+platform+for+C%23.&description=1&font=Inter&forks=1&issues=1&logo=https%3A%2F%2Fgithub-production-user-asset-6210df.s3.amazonaws.com%2F56473591%2F530980330-afd14ca4-7d88-4b2e-98ea-297162077d2a.svg%3FX-Amz-Algorithm%3DAWS4-HMAC-SHA256%26X-Amz-Credential%3DAKIAVCODYLSA53PQK4ZA%252F20251230%252Fus-east-1%252Fs3%252Faws4_request%26X-Amz-Date%3D20251230T130108Z%26X-Amz-Expires%3D300%26X-Amz-Signature%3D66c0d49953ce914d7de22049aaf9d1f9fb61036f8b69df045087011c34cb47ab%26X-Amz-SignedHeaders%3Dhost&name=1&pattern=Signal&pulls=1&stargazers=1&theme=Auto)
+![RemoteExec](https://socialify.git.ci/Stone-Red-Code/RemoteExec/image?custom_description=A+distributed+remote+execution+platform+for+C%23.&description=1&forks=1&issues=1&logo=https%3A%2F%2Fgithub.com%2FStone-Red-Code%2FRemoteExec%2Fblob%2Fmain%2Flogo.svg%3Fraw%3Dtrue&name=1&pattern=Signal&pulls=1&stargazers=1&theme=Auto)
 
 ## What is it?
 
