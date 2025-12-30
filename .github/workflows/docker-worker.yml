@@ -1,6 +1,7 @@
 name: Build and Push Docker Worker Image
 
 on:
+  workflow_dispatch:
   push:
     paths:
       - 'src/RemoteExec.Worker/**'
@@ -11,6 +12,9 @@ jobs:
   build:
     runs-on: ubuntu-latest
     name: Build & Push Worker Image
+    defaults:
+      run:
+        working-directory: "./src"
     steps:
       - uses: actions/checkout@v4
       - name: Log in to Docker Hub
@@ -19,6 +23,6 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
       - name: Build the Docker image
-        run: docker build -t ${{ secrets.DOCKERHUB_USERNAME }}/remoteexec-worker:latest ./src/RemoteExec.Worker
+        run: docker build . -t ${{ secrets.DOCKERHUB_USERNAME }}/remoteexec-worker:latest -f ./RemoteExec.Worker/Dockerfile
       - name: Push the Docker image
         run: docker push ${{ secrets.DOCKERHUB_USERNAME }}/remoteexec-worker:latest
